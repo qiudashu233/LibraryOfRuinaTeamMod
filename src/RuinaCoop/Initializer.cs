@@ -8,7 +8,7 @@ namespace RuinaCoop
 {
     public sealed class Initializer : ModInitializer
     {
-        private const string ExpectedGameHash = "E450EF9DD29ABF5828491A891D86515D4AF35C21C81D8E076335B86F6231C901";
+        private const string ExpectedGameHash = ProtocolInfo.GameHash;
         private static bool _initialized;
         private static string _dependencyDirectory;
 
@@ -30,6 +30,9 @@ namespace RuinaCoop
 
                 RegisterDependencyResolver();
                 PatchInstaller.Install();
+                var overlayObject = new GameObject("RuinaCoop.LobbyOverlay");
+                overlayObject.AddComponent<LobbyOverlay>();
+                Debug.Log("[RuinaCoop] Stage 1 lobby overlay ready.");
                 _initialized = true;
                 Debug.Log("[RuinaCoop] Stage 0 bootstrap loaded; game hash verified; Harmony patch registered.");
             }
