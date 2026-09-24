@@ -1,0 +1,18 @@
+# Local game files and generated build output
+bin/
+obj/
+artifacts/
+dist/
+*.user
+*.suo
+*.log
+*.dmp
+
+# Never version third-party or game binaries and player data
+*.dll
+*.exe
+*.pdb
+*.sav
+*.save
+*.bak
+steam_appid.txt
