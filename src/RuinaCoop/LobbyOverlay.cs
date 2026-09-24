@@ -11,6 +11,9 @@ namespace RuinaCoop
         private readonly Queue<Action> _pending = new Queue<Action>();
         private Lobby? _currentLobby;
         private Lobby[] _discovered = new Lobby[0];
+        private RelaySession _relay;
+        private ProgressSnapshot _progress;
+        private Vector2 _progressScroll;
         private SteamId _hostId;
         private string _joinId = "";
         private string _status = "Press F9 to open the room panel.";
@@ -62,6 +65,11 @@ namespace RuinaCoop
                     _status = "Room operation failed: " + exception.Message;
                     Debug.LogError("[RuinaCoop] Room operation failed: " + exception);
                 }
+            }
+
+            if (_relay != null)
+            {
+                _relay.Tick();
             }
         }
 
@@ -147,6 +155,57 @@ namespace RuinaCoop
             }
 
             GUILayout.EndArea();
+            if (_currentLobby.HasValue)
+            {
+                DrawProgressPanel();
+            }
+        }
+
+        private void DrawProgressPanel()
+        {
+            GUILayout.BeginArea(new Rect(500, 20, 550, 590), GUI.skin.box);
+            GUILayout.Label("Host progress (read-only on guests)");
+            GUILayout.Label(_relay == null ? "Relay unavailable." : _relay.Status);
+            if (_progress == null)
+            {
+                GUILayout.Label("Waiting for the host to load a library save.");
+                GUILayout.EndArea();
+                return;
+            }
+
+            GUILayout.Label("Chapter " + _progress.Chapter + " | Library level " +
+                _progress.LibraryLevel + " | Snapshot " + _progress.Sequence);
+            GUILayout.Label("Selected next stage: " +
+                (_progress.SelectedStageId == 0 ? "none" : _progress.SelectedStageId.ToString()));
+            GUILayout.Label("Opened floors and librarians:");
+            foreach (var floor in _progress.Floors)
+            {
+                GUILayout.Label("  " + floor.Sephirah + " Lv." + floor.Level + ": " +
+                    string.Join(", ", floor.Units.ToArray()));
+            }
+
+            GUILayout.Label(_isHost ? "Choose the next stage (planning only):" : "Host-available stages:");
+            _progressScroll = GUILayout.BeginScrollView(_progressScroll);
+            foreach (var stage in _progress.Stages)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(stage.Id + " [" + stage.State + "] " + stage.Name);
+                if (_isHost && GUILayout.Button("Select", GUILayout.Width(65)))
+                {
+                    if (_relay != null && _relay.SelectStage(stage.Id))
+                    {
+                        _status = "Selected stage " + stage.Id + " for the room.";
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private void OnProgressSnapshot(ProgressSnapshot snapshot)
+        {
+            _progress = snapshot;
         }
 
         private void CreateRoom(bool isPublic)
@@ -176,6 +235,18 @@ namespace RuinaCoop
                     }
 
                     var room = result.Value;
+                    RelaySession relay;
+                    try
+                    {
+                        relay = RelaySession.StartHost(room, Enqueue, OnProgressSnapshot);
+                    }
+                    catch (Exception exception)
+                    {
+                        room.Leave();
+                        _status = "Relay listener failed: " + exception.Message;
+                        Debug.LogError("[RuinaCoop] Relay listener failed: " + exception);
+                        return;
+                    }
                     var configured = room.SetData(ProtocolInfo.ProtocolKey, ProtocolInfo.Version) &&
                         room.SetData(ProtocolInfo.GameHashKey, ProtocolInfo.GameHash) &&
                         room.SetData(ProtocolInfo.HostKey, SteamClient.SteamId.ToString()) &&
@@ -184,6 +255,7 @@ namespace RuinaCoop
                     var published = configured && (isPublic ? room.SetPublic() : room.SetFriendsOnly());
                     if (!published)
                     {
+                        relay.Stop();
                         room.Leave();
                         _status = "Room created but its settings could not be published.";
                         return;
@@ -192,6 +264,7 @@ namespace RuinaCoop
                     _currentLobby = room;
                     _hostId = SteamClient.SteamId;
                     _isHost = true;
+                    _relay = relay;
                     _status = "Room ready. Share its ID or invite a friend.";
                     Debug.Log("[RuinaCoop] Created room " + room.Id + ", max " + room.MaxMembers + ".");
                 });
@@ -265,6 +338,17 @@ namespace RuinaCoop
                     _currentLobby = room;
                     _hostId = (SteamId)hostValue;
                     _isHost = false;
+                    try
+                    {
+                        _relay = RelaySession.StartGuest(room, _hostId, Enqueue, OnProgressSnapshot);
+                    }
+                    catch (Exception exception)
+                    {
+                        LeaveRoom();
+                        _status = "Host relay connection failed: " + exception.Message;
+                        Debug.LogError("[RuinaCoop] Guest relay failed: " + exception);
+                        return;
+                    }
                     _status = "Joined room.";
                     Debug.Log("[RuinaCoop] Joined room " + room.Id + ".");
                 });
@@ -322,6 +406,12 @@ namespace RuinaCoop
 
         private void LeaveRoom()
         {
+            if (_relay != null)
+            {
+                _relay.Stop();
+                _relay = null;
+            }
+            _progress = null;
             var room = _currentLobby;
             _currentLobby = null;
             _hostId = default(SteamId);
