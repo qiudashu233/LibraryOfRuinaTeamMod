@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<NormalInvitation xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Version>1.1</Version>
+  <Workshop>
+    <ID>ruinacoop.dev</ID>
+    <Title>Ruina Coop (Development)</Title>
+    <Description>Cooperative multiplayer development build.</Description>
+    <Tag />
+    <PreviewImage />
+  </Workshop>
+  <InvitationFile>
+    <Stage Exist="false"><Path /></Stage>
+    <EnemyUnit Exist="false"><Path /></EnemyUnit>
+    <EquipPage_Enemy Exist="false"><Path /></EquipPage_Enemy>
+    <EquipPage_Librarian Exist="false"><Path /></EquipPage_Librarian>
+    <DropBook Exist="false"><Path /></DropBook>
+    <CardDropTable Exist="false"><Path /></CardDropTable>
+    <CardInfo Exist="false"><Path /></CardInfo>
+    <Deck Exist="false"><Path /></Deck>
+    <Dialog Exist="false"><Path /></Dialog>
+    <BookDesc Exist="false"><Path /></BookDesc>
+    <Passive Exist="false"><Path /></Passive>
+    <CardAbility Exist="false"><Path /></CardAbility>
+  </InvitationFile>
+</NormalInvitation>

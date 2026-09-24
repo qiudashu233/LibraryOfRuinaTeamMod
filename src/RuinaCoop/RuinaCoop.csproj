@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net46</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <AssemblyName>RuinaCoop</AssemblyName>
+    <RootNamespace>RuinaCoop</RootNamespace>
+    <GameDir Condition="'$(GameDir)' == ''">D:\game\steamapps\common\Library Of Ruina</GameDir>
+    <ManagedDir>$(GameDir)\LibraryOfRuina_Data\Managed</ManagedDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <PackageReference Include="HarmonyX" Version="2.9.0" />
+  </ItemGroup>
+</Project>

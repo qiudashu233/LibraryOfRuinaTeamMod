@@ -16,3 +16,6 @@ dist/
 *.save
 *.bak
 steam_appid.txt
+
+# Local smoke-test artifacts
+artifacts/
