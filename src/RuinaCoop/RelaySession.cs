@@ -19,6 +19,12 @@ namespace RuinaCoop
         private readonly Action<Action> _onMainThread;
         private readonly Action<ProgressSnapshot> _onSnapshot;
         private readonly Dictionary<ulong, Connection> _guests = new Dictionary<ulong, Connection>();
+        private readonly Dictionary<ulong, PendingGuest> _pendingGuests = new Dictionary<ulong, PendingGuest>();
+        private sealed class PendingGuest
+        {
+            internal Connection Connection;
+            internal float Deadline;
+        }
         private HostRelaySocket _hostSocket;
         private GuestRelayConnection _guestConnection;
         private byte[] _latestPacket;
@@ -50,7 +56,8 @@ namespace RuinaCoop
             session._hostSocket = SteamNetworkingSockets.CreateRelaySocket<HostRelaySocket>(VirtualPort);
             session._hostSocket.Owner = session;
             session.Status = "Relay listening; load a library save to share progress.";
-            Debug.Log("[RuinaCoop] Relay listener ready on virtual port " + VirtualPort + ".");
+            Debug.Log("[RuinaCoop] Relay listener ready on virtual port " + VirtualPort +
+                "; Steam relay status: " + SteamNetworkingUtils.Status + ".");
             return session;
         }
 
@@ -62,7 +69,9 @@ namespace RuinaCoop
             session._guestConnection = SteamNetworkingSockets.ConnectRelay<GuestRelayConnection>(hostId, VirtualPort);
             session._guestConnection.Owner = session;
             session.Status = "Connecting to host progress relay...";
-            Debug.Log("[RuinaCoop] Connecting to host relay " + hostId + ".");
+            Debug.Log("[RuinaCoop] Connecting to host relay " + hostId +
+                ", connection " + session._guestConnection.Connection.Id +
+                "; Steam relay status: " + SteamNetworkingUtils.Status + ".");
             return session;
         }
 
@@ -78,6 +87,7 @@ namespace RuinaCoop
                 if (_isHost)
                 {
                     _hostSocket.Receive(32);
+                    AuthorizePendingGuests();
                     if (Time.realtimeSinceStartup >= _nextCaptureTime)
                     {
                         _nextCaptureTime = Time.realtimeSinceStartup + SnapshotIntervalSeconds;
@@ -125,6 +135,11 @@ namespace RuinaCoop
                 {
                     _guestConnection.Close();
                 }
+                foreach (var pending in _pendingGuests.Values)
+                {
+                    pending.Connection.Close(false, 2001, "Room membership not verified");
+                }
+                _pendingGuests.Clear();
                 foreach (var connection in _guests.Values)
                 {
                     connection.Close(false, 0, "Room closed");
@@ -190,12 +205,8 @@ namespace RuinaCoop
             }
         }
 
-        private bool AllowsGuest(SteamId guestId)
+        private bool IsLobbyMember(SteamId guestId)
         {
-            if (_stopped || guestId.Value == 0 || guestId == _hostId || _guests.Count >= ProtocolInfo.MaxPlayers - 1)
-            {
-                return false;
-            }
             foreach (var member in _room.Members)
             {
                 if (member.Id == guestId)
@@ -206,19 +217,59 @@ namespace RuinaCoop
             return false;
         }
 
+        private void AuthorizePendingGuests()
+        {
+            if (_pendingGuests.Count == 0)
+            {
+                return;
+            }
+
+            var resolved = new List<ulong>();
+            foreach (var pair in _pendingGuests)
+            {
+                if (IsLobbyMember((SteamId)pair.Key) && _guests.Count < ProtocolInfo.MaxPlayers - 1)
+                {
+                    _guests[pair.Key] = pair.Value.Connection;
+                    SendSnapshot(pair.Value.Connection);
+                    Status = "Sharing host progress with " + _guests.Count + " guest(s).";
+                    Debug.Log("[RuinaCoop] Relay member authorized: " + pair.Key + ".");
+                    resolved.Add(pair.Key);
+                }
+                else if (Time.realtimeSinceStartup >= pair.Value.Deadline)
+                {
+                    pair.Value.Connection.Close(false, 2001, "Not in the Steam room");
+                    Debug.LogWarning("[RuinaCoop] Relay member rejected after waiting: " + pair.Key +
+                        "; lobby members " + _room.MemberCount + ".");
+                    resolved.Add(pair.Key);
+                }
+            }
+            foreach (var id in resolved)
+            {
+                _pendingGuests.Remove(id);
+            }
+        }
+
         private void GuestConnected(Connection connection, ConnectionInfo info)
         {
             _onMainThread(() =>
             {
-                if (_stopped || !info.Identity.IsSteamId || !AllowsGuest(info.Identity.SteamId))
+                if (_stopped || !info.Identity.IsSteamId || info.Identity.SteamId.Value == 0 ||
+                    info.Identity.SteamId == _hostId)
                 {
-                    connection.Close(false, 0, "Not a room member");
+                    Debug.LogWarning("[RuinaCoop] Relay peer rejected: invalid identity " +
+                        info.Identity + ".");
+                    connection.Close(false, 2001, "Invalid room identity");
                     return;
                 }
-                _guests[info.Identity.SteamId.Value] = connection;
-                Status = "Relay connected to " + _guests.Count + " guest(s).";
-                SendSnapshot(connection);
-                Debug.Log("[RuinaCoop] Guest relay connected: " + info.Identity.SteamId + ".");
+                var guestId = info.Identity.SteamId.Value;
+                _pendingGuests[guestId] = new PendingGuest
+                {
+                    Connection = connection,
+                    Deadline = Time.realtimeSinceStartup + 5f
+                };
+                Status = "Verifying " + _pendingGuests.Count + " relay guest(s) against room members...";
+                Debug.Log("[RuinaCoop] Relay peer connected pending room check: " + guestId +
+                    "; lobby members " + _room.MemberCount + ".");
             });
         }
 
@@ -230,9 +281,12 @@ namespace RuinaCoop
                 {
                     return;
                 }
-                _guests.Remove(info.Identity.SteamId.Value);
+                var guestId = info.Identity.SteamId.Value;
+                _pendingGuests.Remove(guestId);
+                _guests.Remove(guestId);
                 Status = "Relay connected to " + _guests.Count + " guest(s).";
-                Debug.Log("[RuinaCoop] Guest relay disconnected: " + info.Identity.SteamId + ".");
+                Debug.Log("[RuinaCoop] Guest relay disconnected: " + guestId +
+                    ", reason " + info.EndReason + ".");
             });
         }
 
@@ -244,14 +298,15 @@ namespace RuinaCoop
                 {
                     return;
                 }
-                if (!info.Identity.IsSteamId || info.Identity.SteamId != _hostId)
+                Debug.Log("[RuinaCoop] Host relay connected callback: identity " +
+                    info.Identity + ", expected " + _hostId + ".");
+                if (info.Identity.IsSteamId && info.Identity.SteamId != _hostId)
                 {
                     _guestConnection.Close();
                     Status = "Relay peer was not the room host.";
                     return;
                 }
                 Status = "Connected to host; waiting for progress.";
-                Debug.Log("[RuinaCoop] Host relay connected.");
             });
         }
 
@@ -327,9 +382,14 @@ namespace RuinaCoop
 
             public override void OnConnecting(Connection connection, ConnectionInfo info)
             {
-                if (Owner == null || !info.Identity.IsSteamId || !Owner.AllowsGuest(info.Identity.SteamId))
+                Debug.Log("[RuinaCoop] Incoming relay connection " + connection.Id +
+                    ": identity " + info.Identity + ".");
+                if (Owner == null || Owner._stopped || Owner._guests.Count + Owner._pendingGuests.Count >= 8 ||
+                    info.Identity.IsSteamId && (info.Identity.SteamId.Value == 0 ||
+                    info.Identity.SteamId == Owner._hostId))
                 {
-                    connection.Close(false, 0, "Not a room member");
+                    Debug.LogWarning("[RuinaCoop] Incoming relay connection rejected before accept.");
+                    connection.Close(false, 2001, "Invalid or excessive relay peer");
                     return;
                 }
                 base.OnConnecting(connection, info);
@@ -337,6 +397,8 @@ namespace RuinaCoop
 
             public override void OnConnected(Connection connection, ConnectionInfo info)
             {
+                Debug.Log("[RuinaCoop] Host socket connected " + connection.Id +
+                    ": identity " + info.Identity + ".");
                 base.OnConnected(connection, info);
                 if (Owner != null)
                 {
@@ -346,6 +408,8 @@ namespace RuinaCoop
 
             public override void OnDisconnected(Connection connection, ConnectionInfo info)
             {
+                Debug.LogWarning("[RuinaCoop] Host socket disconnected " + connection.Id +
+                    ": identity " + info.Identity + ", reason " + info.EndReason + ".");
                 base.OnDisconnected(connection, info);
                 if (Owner != null)
                 {
@@ -370,6 +434,7 @@ namespace RuinaCoop
 
             public override void OnConnected(ConnectionInfo info)
             {
+                Debug.Log("[RuinaCoop] Guest socket connected: identity " + info.Identity + ".");
                 base.OnConnected(info);
                 if (Owner != null)
                 {
@@ -379,6 +444,8 @@ namespace RuinaCoop
 
             public override void OnDisconnected(ConnectionInfo info)
             {
+                Debug.LogWarning("[RuinaCoop] Guest socket disconnected: identity " +
+                    info.Identity + ", reason " + info.EndReason + ".");
                 base.OnDisconnected(info);
                 if (Owner != null)
                 {
