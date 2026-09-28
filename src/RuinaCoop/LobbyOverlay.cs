@@ -12,6 +12,7 @@ namespace RuinaCoop
         private Lobby? _currentLobby;
         private Lobby[] _discovered = new Lobby[0];
         private RelaySession _relay;
+        private LocalSelfTest _localSelfTest = new LocalSelfTest();
         private ProgressSnapshot _progress;
         private Vector2 _progressScroll;
         private SteamId _hostId;
@@ -34,6 +35,7 @@ namespace RuinaCoop
             SteamFriends.OnGameLobbyJoinRequested -= HandleInvite;
             SteamMatchmaking.OnLobbyMemberLeave -= HandleMemberLeft;
             SteamMatchmaking.OnLobbyMemberDisconnected -= HandleMemberDisconnected;
+            _localSelfTest.Stop();
             LeaveRoom();
         }
 
@@ -71,6 +73,7 @@ namespace RuinaCoop
             {
                 _relay.Tick();
             }
+            _localSelfTest.Tick();
         }
 
         private void OnGUI()
@@ -99,6 +102,16 @@ namespace RuinaCoop
                 if (_isHost && GUILayout.Button("Invite Steam friends"))
                 {
                     SteamFriends.OpenGameInviteOverlay(room.Id);
+                }
+                if (_isHost)
+                {
+                    GUI.enabled = _progress != null && !_localSelfTest.Running;
+                    if (GUILayout.Button("Run local snapshot + loopback self-test"))
+                    {
+                        _localSelfTest.Start(_progress, room.Id.Value);
+                    }
+                    GUI.enabled = true;
+                    GUILayout.Label("Local self-test: " + _localSelfTest.Status);
                 }
                 if (GUILayout.Button("Leave room"))
                 {
@@ -406,6 +419,8 @@ namespace RuinaCoop
 
         private void LeaveRoom()
         {
+            _localSelfTest.Stop();
+            _localSelfTest = new LocalSelfTest();
             if (_relay != null)
             {
                 _relay.Stop();
