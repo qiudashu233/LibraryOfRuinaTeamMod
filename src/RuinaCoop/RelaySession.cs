@@ -9,7 +9,7 @@ namespace RuinaCoop
 {
     internal sealed class RelaySession
     {
-        private const int VirtualPort = 17617;
+        private const int VirtualPort = 0;
         private const int MaxMessageBytes = 65536;
         private const float SnapshotIntervalSeconds = 2f;
 
