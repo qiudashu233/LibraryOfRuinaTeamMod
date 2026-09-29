@@ -8,9 +8,9 @@ namespace RuinaCoop
     // Binds an otherwise anonymous P2P socket to Steam's authenticated lobby-chat sender.
     internal static class RelayAuth
     {
-        private const string ChallengePrefix = "RC5C:";
-        private const string ProofPrefix = "RC5P:";
-        private const string AcceptedPrefix = "RC5A:";
+        private const string ChallengePrefix = "RC7C:";
+        private const string ProofPrefix = "RC7P:";
+        private const string AcceptedPrefix = "RC7A:";
 
         internal static string NewChallenge()
         {

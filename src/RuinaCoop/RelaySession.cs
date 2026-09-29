@@ -19,6 +19,8 @@ namespace RuinaCoop
         private readonly Action<Action> _onMainThread;
         private readonly Action<ProgressSnapshot> _onSnapshot;
         private readonly Dictionary<ulong, Connection> _guests = new Dictionary<ulong, Connection>();
+        private readonly Dictionary<ulong, uint> _lastClaimRequests = new Dictionary<ulong, uint>();
+        private readonly PrepClaims _claims = new PrepClaims();
         private readonly Dictionary<uint, PendingGuest> _pendingGuests = new Dictionary<uint, PendingGuest>();
         private sealed class PendingGuest
         {
@@ -39,9 +41,12 @@ namespace RuinaCoop
         private bool _guestAuthenticated;
         private string _lobbyEchoToken;
         private float _lobbyEchoDeadline;
+        private uint _nextClaimRequest;
+        private uint _lastClaimReply;
 
         internal string Status { get; private set; }
         internal string LobbyEchoStatus { get; private set; } = "Not run.";
+        internal string ClaimStatus { get; private set; } = "Choose a stage, then the host chooses a floor.";
         internal ProgressSnapshot LatestSnapshot { get; private set; }
 
         private RelaySession(Lobby room, SteamId hostId, bool isHost,
@@ -138,13 +143,74 @@ namespace RuinaCoop
             return true;
         }
 
+        internal bool SelectFloor(byte floorId)
+        {
+            if (!_isHost || !_claims.SelectFloor(LatestSnapshot, floorId))
+            {
+                return false;
+            }
+            ClaimStatus = "Floor selected; players may claim librarians.";
+            CaptureAndBroadcast();
+            return true;
+        }
+
+        internal void RequestClaim(byte unitIndex, ClaimAction action)
+        {
+            if (_stopped || LatestSnapshot == null || LatestSnapshot.SelectedStageId == 0 ||
+                LatestSnapshot.SelectedFloorId == PrepClaims.NoFloor)
+            {
+                ClaimStatus = "Select a stage and floor first.";
+                return;
+            }
+            var snapshot = LatestSnapshot;
+            var request = new ClaimRequest
+            {
+                RequestId = ++_nextClaimRequest,
+                StageId = snapshot.SelectedStageId,
+                FloorId = snapshot.SelectedFloorId,
+                UnitIndex = unitIndex,
+                ExpectedRevision = snapshot.ClaimRevision,
+                Action = action
+            };
+            if (_isHost)
+            {
+                var result = _claims.Apply(SteamClient.SteamId.Value, request.StageId,
+                    request.FloorId, request.UnitIndex, request.ExpectedRevision, action);
+                ClaimStatus = "Claim " + action + ": " + result + ".";
+                if (result == ClaimResultCode.Accepted)
+                {
+                    CaptureAndBroadcast();
+                }
+                return;
+            }
+            if (!_guestAuthenticated || _guestConnection == null)
+            {
+                ClaimStatus = "Waiting for host room verification.";
+                return;
+            }
+            var send = _guestConnection.Connection.SendMessage(
+                ClaimProtocol.EncodeRequest(_room.Id.Value, request), SendType.Reliable);
+            ClaimStatus = send == Steamworks.Result.OK
+                ? "Claim request sent; waiting for host."
+                : "Claim request send failed: " + send + ".";
+        }
+
+        internal void ReleaseAbsentClaims()
+        {
+            if (_isHost && _claims.ReleaseAbsent(id => IsLobbyMember((SteamId)id)))
+            {
+                ClaimStatus = "Released claims held by departed members.";
+                CaptureAndBroadcast();
+            }
+        }
+
         internal void StartLobbyEchoTest()
         {
             if (!_isHost || _stopped || !SteamClient.IsValid)
             {
                 return;
             }
-            _lobbyEchoToken = "RC6T:" + RelayAuth.NewChallenge();
+            _lobbyEchoToken = "RC7T:" + RelayAuth.NewChallenge();
             _lobbyEchoDeadline = Time.realtimeSinceStartup + 10f;
             if (!_room.SendChatString(_lobbyEchoToken))
             {
@@ -187,6 +253,7 @@ namespace RuinaCoop
                     connection.Close(false, 0, "Room closed");
                 }
                 _guests.Clear();
+                _lastClaimRequests.Clear();
                 if (_hostSocket != null)
                 {
                     _hostSocket.Close();
@@ -204,6 +271,7 @@ namespace RuinaCoop
             {
                 var snapshot = ProgressSnapshot.Capture(_selectedStageId);
                 _selectedStageId = snapshot.SelectedStageId;
+                _claims.Reconcile(snapshot);
                 var content = snapshot.Encode(_room.Id.Value);
                 if (SameBytes(content, _latestContent))
                 {
@@ -305,6 +373,7 @@ namespace RuinaCoop
             foreach (var id in departed)
             {
                 _guests.Remove(id);
+                _lastClaimRequests.Remove(id);
                 Debug.Log("[RuinaCoop] Relay member left the room: " + id + ".");
             }
         }
@@ -362,6 +431,7 @@ namespace RuinaCoop
                 if (guestId != 0)
                 {
                     _guests.Remove(guestId);
+                    _lastClaimRequests.Remove(guestId);
                 }
                 Status = "Sharing host progress with " + _guests.Count + " guest(s).";
                 Debug.Log("[RuinaCoop] Guest relay disconnected: connection " + connection.Id +
@@ -551,6 +621,86 @@ namespace RuinaCoop
             });
         }
 
+        private void ReceiveClaimReply(ClaimReply reply)
+        {
+            _onMainThread(() =>
+            {
+                if (_stopped || _isHost || !_guestAuthenticated ||
+                    reply.RequestId <= _lastClaimReply)
+                {
+                    return;
+                }
+                _lastClaimReply = reply.RequestId;
+                ClaimStatus = "Claim request " + reply.RequestId + ": " + reply.Result +
+                    " (revision " + reply.Revision + ").";
+                if (reply.Result != ClaimResultCode.Accepted)
+                {
+                    Debug.LogWarning("[RuinaCoop] Claim request rejected: " + reply.Result +
+                        "; host revision " + reply.Revision + ".");
+                }
+            });
+        }
+
+        private void ReceiveGuestMessage(Connection connection, byte[] bytes)
+        {
+            _onMainThread(() =>
+            {
+                if (_stopped || !_isHost)
+                {
+                    return;
+                }
+                ClaimRequest request;
+                if (!ClaimProtocol.TryDecodeRequest(bytes, _room.Id.Value, out request))
+                {
+                    Debug.LogWarning("[RuinaCoop] Invalid guest claim packet ignored.");
+                    return;
+                }
+                ulong sender = 0;
+                foreach (var pair in _guests)
+                {
+                    if (pair.Value.Id == connection.Id)
+                    {
+                        sender = pair.Key;
+                        break;
+                    }
+                }
+                if (sender == 0 || !IsLobbyMember((SteamId)sender))
+                {
+                    Debug.LogWarning("[RuinaCoop] Claim from an unverified room member ignored.");
+                    return;
+                }
+                uint lastRequest;
+                ClaimResultCode result;
+                if (_lastClaimRequests.TryGetValue(sender, out lastRequest) &&
+                    request.RequestId <= lastRequest)
+                {
+                    result = ClaimResultCode.StaleRevision;
+                }
+                else
+                {
+                    _lastClaimRequests[sender] = request.RequestId;
+                    result = _claims.Apply(sender, request.StageId, request.FloorId,
+                        request.UnitIndex, request.ExpectedRevision, request.Action);
+                    if (result == ClaimResultCode.Accepted)
+                    {
+                        CaptureAndBroadcast();
+                    }
+                }
+                var reply = new ClaimReply
+                {
+                    RequestId = request.RequestId,
+                    Result = result,
+                    Revision = _claims.Revision
+                };
+                var send = connection.SendMessage(
+                    ClaimProtocol.EncodeReply(_room.Id.Value, reply), SendType.Reliable);
+                if (send != Steamworks.Result.OK)
+                {
+                    Debug.LogWarning("[RuinaCoop] Claim reply send failed: " + send + ".");
+                }
+            });
+        }
+
         private static bool SameBytes(byte[] left, byte[] right)
         {
             if (left == null || right == null || left.Length != right.Length)
@@ -620,10 +770,18 @@ namespace RuinaCoop
             public override void OnMessage(Connection connection, NetIdentity identity, IntPtr data,
                 int size, long messageNum, long recvTime, int channel)
             {
-                // Stage 2 transport is intentionally host-to-guest only.
-                if (size > 0)
+                if (Owner == null)
                 {
-                    Debug.LogWarning("[RuinaCoop] Unexpected guest relay message ignored.");
+                    return;
+                }
+                var bytes = CopyMessage(data, size);
+                if (bytes != null)
+                {
+                    Owner.ReceiveGuestMessage(connection, bytes);
+                }
+                else if (size > 0)
+                {
+                    Debug.LogWarning("[RuinaCoop] Oversized guest relay message ignored.");
                 }
             }
         }
@@ -670,6 +828,11 @@ namespace RuinaCoop
                     else if (RelayAuth.TryReadAccepted(bytes, out challenge))
                     {
                         Owner.ReceiveAccepted(challenge);
+                    }
+                    else if (ClaimProtocol.TryDecodeReply(bytes, Owner._room.Id.Value,
+                        out ClaimReply reply))
+                    {
+                        Owner.ReceiveClaimReply(reply);
                     }
                     else
                     {

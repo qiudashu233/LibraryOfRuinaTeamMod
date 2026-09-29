@@ -1,0 +1,17 @@
+《废墟图书馆》Ruina Coop v7 角色认领双人测试
+
+两个人都使用同一个 RuinaCoop-stage3-v7-claims-test.zip。先关闭游戏，再把压缩包中的 RuinaCoop 整个文件夹复制到游戏目录\LibraryOfRuina_Data\Mods\，替换旧版。最终应能看到 Mods\RuinaCoop\StageModInfo.xml。用 Steam 的“LOR With Mods”启动，只勾选 Ruina Coop (Development)。
+
+这次只测试 F9 面板的角色认领。不要开始真正的接待或修改卡组；卡组锁还没有接入。
+
+1. 房主进入自己的图书馆存档，按 F9 创建房间，把 Room ID 发给测试玩家。
+2. 测试玩家按 F9 用 Room ID 加入。先确认双方仍能看到房主的章节、楼层和关卡。
+3. 房主在右侧 Host progress 页选一个关卡，再点右侧上方 Role claims，选一个有馆员的楼层。测试玩家也切到 Role claims，应看到同一个关卡、楼层和馆员。
+4. 测试玩家点第一个空馆员的 Claim。双方应看到该馆员归测试玩家。房主点另一个空馆员的 Claim，双方应看到该馆员归房主。
+5. 看测试玩家认领的馆员：房主不应有 Release 按钮。测试玩家自己点 Release 后，双方都应看到 unclaimed。
+6. 如果方便，双方几乎同时点同一个空馆员的 Claim；最终只能有一人拥有它，另一端会看到拒绝或版本过期提示。
+7. 房主改选另一关，Role claims 应回到未选楼层且旧认领清空；重新选择楼层可重新认领。
+8. 测试玩家认领一个馆员后离开房间。房主点击 Release claims of departed members，该馆员应变成 unclaimed。
+
+请告诉房主每一步“通过/失败”。失败时截两端 F9 面板，并在再次启动游戏前复制各自 Player.log：
+%USERPROFILE%\AppData\LocalLow\Project Moon\LibraryOfRuina\Player.log

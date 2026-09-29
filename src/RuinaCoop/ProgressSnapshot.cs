@@ -10,7 +10,7 @@ namespace RuinaCoop
     internal sealed class ProgressSnapshot
     {
         private const uint Magic = 0x52435053;
-        private const byte WireVersion = 1;
+        private const byte WireVersion = 2;
         private const int MaxPacketBytes = 65536;
         private const int MaxStages = 512;
         private const int MaxFloors = 12;
@@ -21,6 +21,9 @@ namespace RuinaCoop
         internal int Chapter;
         internal int LibraryLevel;
         internal int SelectedStageId;
+        internal byte SelectedFloorId = PrepClaims.NoFloor;
+        internal uint ClaimRevision;
+        internal readonly List<ulong> ClaimOwners = new List<ulong>();
         internal readonly List<StageEntry> Stages = new List<StageEntry>();
         internal readonly List<FloorEntry> Floors = new List<FloorEntry>();
 
@@ -37,6 +40,7 @@ namespace RuinaCoop
             internal SephirahType Sephirah;
             internal int Level;
             internal readonly List<string> Units = new List<string>();
+            internal readonly List<object> UnitReferences = new List<object>();
         }
 
         internal static ProgressSnapshot Capture(int selectedStageId)
@@ -106,6 +110,7 @@ namespace RuinaCoop
                 foreach (var unit in units)
                 {
                     floorEntry.Units.Add(unit == null ? "" : unit.name ?? "");
+                    floorEntry.UnitReferences.Add(unit);
                 }
                 result.Floors.Add(floorEntry);
             }
@@ -148,6 +153,13 @@ namespace RuinaCoop
                     {
                         WriteName(writer, unitName);
                     }
+                }
+                writer.Write(SelectedFloorId);
+                writer.Write(ClaimRevision);
+                writer.Write((byte)ClaimOwners.Count);
+                foreach (var owner in ClaimOwners)
+                {
+                    writer.Write(owner);
                 }
                 writer.Flush();
                 if (stream.Length > MaxPacketBytes)
@@ -256,6 +268,17 @@ namespace RuinaCoop
                         }
                         result.Floors.Add(entry);
                     }
+                    result.SelectedFloorId = reader.ReadByte();
+                    result.ClaimRevision = reader.ReadUInt32();
+                    var ownerCount = reader.ReadByte();
+                    if (ownerCount > MaxUnitsPerFloor)
+                    {
+                        return Reject(out reason, "Claim owner count exceeds the limit: " + ownerCount + ".");
+                    }
+                    for (var i = 0; i < ownerCount; i++)
+                    {
+                        result.ClaimOwners.Add(reader.ReadUInt64());
+                    }
                     if (stream.Position != stream.Length)
                     {
                         return Reject(out reason, "Packet has trailing bytes.");
@@ -264,6 +287,23 @@ namespace RuinaCoop
                     {
                         return Reject(out reason, "Selected stage ID is not in the stage list: " +
                             result.SelectedStageId + ".");
+                    }
+                    if (result.SelectedFloorId == PrepClaims.NoFloor)
+                    {
+                        if (ownerCount != 0)
+                        {
+                            return Reject(out reason, "Claims exist without a selected floor.");
+                        }
+                    }
+                    else
+                    {
+                        var selectedFloor = result.Floors.Find(floor =>
+                            (byte)floor.Sephirah == result.SelectedFloorId);
+                        if (result.SelectedStageId == 0 || selectedFloor == null ||
+                            ownerCount != selectedFloor.Units.Count)
+                        {
+                            return Reject(out reason, "Claims do not match the selected stage and floor.");
+                        }
                     }
                     snapshot = result;
                     return true;

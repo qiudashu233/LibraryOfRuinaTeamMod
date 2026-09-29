@@ -15,6 +15,8 @@ namespace RuinaCoop
         private LocalSelfTest _localSelfTest = new LocalSelfTest();
         private ProgressSnapshot _progress;
         private Vector2 _progressScroll;
+        private Vector2 _claimScroll;
+        private int _rightTab;
         private SteamId _hostId;
         private string _joinId = "";
         private string _status = "Press F9 to open the room panel.";
@@ -185,7 +187,7 @@ namespace RuinaCoop
         private void DrawProgressPanel()
         {
             GUILayout.BeginArea(new Rect(500, 20, 550, 590), GUI.skin.box);
-            GUILayout.Label("Host progress (read-only on guests)");
+            _rightTab = GUILayout.Toolbar(_rightTab, new[] { "Host progress", "Role claims" });
             GUILayout.Label(_relay == null ? "Relay unavailable." : _relay.Status);
             if (_progress == null)
             {
@@ -202,6 +204,13 @@ namespace RuinaCoop
                 {
                     GUILayout.Label("Waiting for host progress and room verification.");
                 }
+                GUILayout.EndArea();
+                return;
+            }
+
+            if (_rightTab == 1)
+            {
+                DrawClaimsPanel();
                 GUILayout.EndArea();
                 return;
             }
@@ -234,6 +243,96 @@ namespace RuinaCoop
             }
             GUILayout.EndScrollView();
             GUILayout.EndArea();
+        }
+
+        private void DrawClaimsPanel()
+        {
+            GUILayout.Label("Reception preparation (planning only; no deck lock yet)");
+            GUILayout.Label("Selected stage: " +
+                (_progress.SelectedStageId == 0 ? "none" : _progress.SelectedStageId.ToString()));
+            GUILayout.Label("Claim revision: " + _progress.ClaimRevision);
+            GUILayout.Label(_relay == null ? "Relay unavailable." : _relay.ClaimStatus);
+            if (_progress.SelectedStageId == 0)
+            {
+                GUILayout.Label("The host must choose a stage on the Host progress tab.");
+                return;
+            }
+
+            _claimScroll = GUILayout.BeginScrollView(_claimScroll);
+            if (_isHost)
+            {
+                GUILayout.Label("Host: choose one opened floor for this reception:");
+                foreach (var floor in _progress.Floors)
+                {
+                    if (floor.Units.Count == 0)
+                    {
+                        continue;
+                    }
+                    if (GUILayout.Button("Use " + floor.Sephirah + " (" + floor.Units.Count +
+                        " librarians)"))
+                    {
+                        _relay.SelectFloor((byte)floor.Sephirah);
+                    }
+                }
+            }
+
+            ProgressSnapshot.FloorEntry selected = null;
+            foreach (var floor in _progress.Floors)
+            {
+                if ((byte)floor.Sephirah == _progress.SelectedFloorId)
+                {
+                    selected = floor;
+                    break;
+                }
+            }
+            if (selected == null)
+            {
+                GUILayout.Label("Waiting for the host to choose a floor.");
+                GUILayout.EndScrollView();
+                return;
+            }
+
+            GUILayout.Label("Selected floor: " + selected.Sephirah);
+            var localId = SteamClient.SteamId.Value;
+            for (var i = 0; i < selected.Units.Count; i++)
+            {
+                var owner = _progress.ClaimOwners[i];
+                GUILayout.BeginHorizontal();
+                GUILayout.Label((i + 1) + ". " + selected.Units[i] + " — " + OwnerLabel(owner));
+                if (_relay != null && (owner == 0 || owner == localId))
+                {
+                    var action = owner == 0 ? ClaimAction.Claim : ClaimAction.Release;
+                    if (GUILayout.Button(action.ToString(), GUILayout.Width(75)))
+                    {
+                        _relay.RequestClaim((byte)i, action);
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+            if (_isHost && _relay != null && GUILayout.Button("Release claims of departed members"))
+            {
+                _relay.ReleaseAbsentClaims();
+            }
+            GUILayout.EndScrollView();
+        }
+
+        private string OwnerLabel(ulong owner)
+        {
+            if (owner == 0)
+            {
+                return "unclaimed";
+            }
+            if (_currentLobby.HasValue)
+            {
+                foreach (var member in _currentLobby.Value.Members)
+                {
+                    if (member.Id.Value == owner)
+                    {
+                        return member.Name;
+                    }
+                }
+            }
+            return owner + " (left room)";
         }
 
         private void OnProgressSnapshot(ProgressSnapshot snapshot)

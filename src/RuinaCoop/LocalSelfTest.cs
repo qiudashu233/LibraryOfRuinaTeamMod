@@ -243,7 +243,9 @@ namespace RuinaCoop
                 Sequence = 17,
                 Chapter = 5,
                 LibraryLevel = 42,
-                SelectedStageId = 101
+                SelectedStageId = 101,
+                SelectedFloorId = (byte)SephirahType.Malkuth,
+                ClaimRevision = 3
             };
             sample.Stages.Add(new ProgressSnapshot.StageEntry
             {
@@ -257,6 +259,8 @@ namespace RuinaCoop
             floor.Units.Add("馆员一");
             floor.Units.Add("Roland 롤랑");
             sample.Floors.Add(floor);
+            sample.ClaimOwners.Add(0);
+            sample.ClaimOwners.Add(76561199548728145UL);
             return sample;
         }
 
@@ -265,6 +269,9 @@ namespace RuinaCoop
             if (left.Sequence != right.Sequence || left.Chapter != right.Chapter ||
                 left.LibraryLevel != right.LibraryLevel ||
                 left.SelectedStageId != right.SelectedStageId ||
+                left.SelectedFloorId != right.SelectedFloorId ||
+                left.ClaimRevision != right.ClaimRevision ||
+                !left.ClaimOwners.SequenceEqual(right.ClaimOwners) ||
                 left.Stages.Count != right.Stages.Count || left.Floors.Count != right.Floors.Count)
             {
                 return false;
