@@ -67,6 +67,31 @@ Check(!ProgressSnapshot.TryDecode(damaged, roomId, out _), "wire version");
 damaged = (byte[])packet.Clone();
 BitConverter.GetBytes(99999).CopyTo(damaged, 25);
 Check(!ProgressSnapshot.TryDecode(damaged, roomId, out _), "selected stage must exist");
+var rawInvalid = new ProgressSnapshot();
+rawInvalid.Stages.Add(new ProgressSnapshot.StageEntry
+    { Id = 101, State = StoryState.Open, Name = "First" });
+rawInvalid.Stages.Add(new ProgressSnapshot.StageEntry
+    { Id = 101, State = StoryState.Open, Name = "Duplicate" });
+Check(!ProgressSnapshot.TryDecode(rawInvalid.Encode(roomId), roomId, out _, out var invalidReason) &&
+      invalidReason.Contains("repeats ID 101"), "duplicate stage diagnostics");
+var rawFloor = new LibraryFloorModel { Sephirah = SephirahType.Malkuth, Level = 6 };
+rawFloor.Units.Add(new UnitData { name = "罗兰" });
+LibraryModel.Instance.OpenedFloors.Add(rawFloor);
+LibraryModel.Instance.OpenedFloors.Add(rawFloor);
+StageClassInfoList.Instance.Stages.Add(new StageData
+    { id = new StageId { id = 101 }, currentState = StoryState.Open, stageName = "First" });
+StageClassInfoList.Instance.Stages.Add(new StageData
+    { id = new StageId { id = 101 }, currentState = StoryState.Open, stageName = "Duplicate" });
+StageClassInfoList.Instance.Stages.Add(new StageData
+    { id = new StageId { id = 0 }, currentState = StoryState.Open, stageName = "Nonpositive" });
+StageClassInfoList.Instance.Stages.Add(new StageData
+    { id = new StageId { id = 102 }, currentState = StoryState.Close, stageName = "Closed" });
+var captured = ProgressSnapshot.Capture(101);
+Check(captured.Stages.Count == 1 && captured.Stages[0].Id == 101 && captured.Floors.Count == 1,
+    "capture filters invalid or duplicate IDs");
+Check(ProgressSnapshot.TryDecode(captured.Encode(roomId), roomId, out var capturedDecoded) &&
+      capturedDecoded.Stages.Count == 1 && capturedDecoded.Floors.Count == 1,
+    "captured snapshot passes receiver validation");
 var challenge = RelayAuth.NewChallenge();
 Check(challenge.Length == 32 && challenge != RelayAuth.NewChallenge(), "random challenge");
 Check(RelayAuth.TryReadChallenge(RelayAuth.ChallengePacket(challenge), out var parsedChallenge) &&
@@ -97,7 +122,7 @@ finally
 var alteredChallenge = (byte[])RelayAuth.ChallengePacket(challenge).Clone();
 alteredChallenge[alteredChallenge.Length - 1] = (byte)'Z';
 Check(!RelayAuth.TryReadChallenge(alteredChallenge, out _), "malformed challenge rejected");
-Console.WriteLine($"PASS: 12 codec + 10 lobby-auth checks; snapshot {packet.Length} bytes.");
+Console.WriteLine($"PASS: 15 codec + 10 lobby-auth checks; snapshot {packet.Length} bytes.");
 if (args.Length == 1)
 {
     System.IO.File.WriteAllBytes(args[0], packet);

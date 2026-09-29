@@ -12,7 +12,8 @@ namespace RuinaCoop
     internal sealed class LibraryModel
     {
         internal static LibraryModel Instance = new LibraryModel();
-        internal List<LibraryFloorModel> GetOpenedFloorList() => new List<LibraryFloorModel>();
+        internal List<LibraryFloorModel> OpenedFloors = new List<LibraryFloorModel>();
+        internal List<LibraryFloorModel> GetOpenedFloorList() => OpenedFloors;
         internal int GetChapter() => 0;
         internal int GetLibraryLevel() => 0;
     }
@@ -21,7 +22,8 @@ namespace RuinaCoop
     {
         internal SephirahType Sephirah;
         internal int Level;
-        internal List<UnitData> GetUnitDataList() => new List<UnitData>();
+        internal List<UnitData> Units = new List<UnitData>();
+        internal List<UnitData> GetUnitDataList() => Units;
     }
 
     internal sealed class UnitData { internal string name; }
@@ -40,6 +42,7 @@ namespace RuinaCoop
     internal sealed class StageClassInfoList
     {
         internal static StageClassInfoList Instance = new StageClassInfoList();
-        internal List<StageData> GetAllDataList() => new List<StageData>();
+        internal List<StageData> Stages = new List<StageData>();
+        internal List<StageData> GetAllDataList() => Stages;
     }
 }

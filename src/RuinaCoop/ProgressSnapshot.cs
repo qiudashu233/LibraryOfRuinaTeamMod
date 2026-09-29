@@ -55,6 +55,7 @@ namespace RuinaCoop
                 SelectedStageId = selectedStageId
             };
 
+            var stageIds = new HashSet<int>();
             foreach (var stage in StageClassInfoList.Instance.GetAllDataList())
             {
                 if (stage == null || !stage.id.IsBasic())
@@ -63,7 +64,8 @@ namespace RuinaCoop
                 }
 
                 var state = stage.currentState;
-                if (state == StoryState.Close)
+                var id = stage.id.id;
+                if (state == StoryState.Close || id <= 0 || !stageIds.Add(id))
                 {
                     continue;
                 }
@@ -75,7 +77,7 @@ namespace RuinaCoop
 
                 result.Stages.Add(new StageEntry
                 {
-                    Id = stage.id.id,
+                    Id = id,
                     Chapter = stage.chapter,
                     State = state,
                     Name = stage.stageName ?? ""
@@ -83,8 +85,13 @@ namespace RuinaCoop
             }
             result.Stages.Sort((left, right) => left.Id.CompareTo(right.Id));
 
+            var floorIds = new HashSet<byte>();
             foreach (var floor in openedFloors)
             {
+                if (floor == null || !floorIds.Add((byte)floor.Sephirah))
+                {
+                    continue;
+                }
                 if (result.Floors.Count >= MaxFloors)
                 {
                     throw new InvalidOperationException("The opened floor list exceeds the supported snapshot limit.");
@@ -153,10 +160,18 @@ namespace RuinaCoop
 
         internal static bool TryDecode(byte[] packet, ulong expectedRoomId, out ProgressSnapshot snapshot)
         {
+            string reason;
+            return TryDecode(packet, expectedRoomId, out snapshot, out reason);
+        }
+
+        internal static bool TryDecode(byte[] packet, ulong expectedRoomId,
+            out ProgressSnapshot snapshot, out string reason)
+        {
             snapshot = null;
+            reason = null;
             if (packet == null || packet.Length > MaxPacketBytes || packet.Length < 30)
             {
-                return false;
+                return Reject(out reason, "Packet size is invalid.");
             }
 
             try
@@ -164,10 +179,17 @@ namespace RuinaCoop
                 using (var stream = new MemoryStream(packet, false))
                 using (var reader = new BinaryReader(stream, Encoding.UTF8))
                 {
-                    if (reader.ReadUInt32() != Magic || reader.ReadByte() != WireVersion ||
-                        reader.ReadUInt64() != expectedRoomId)
+                    if (reader.ReadUInt32() != Magic)
                     {
-                        return false;
+                        return Reject(out reason, "Packet magic does not match.");
+                    }
+                    if (reader.ReadByte() != WireVersion)
+                    {
+                        return Reject(out reason, "Snapshot wire version does not match.");
+                    }
+                    if (reader.ReadUInt64() != expectedRoomId)
+                    {
+                        return Reject(out reason, "Snapshot room ID does not match.");
                     }
 
                     var result = new ProgressSnapshot
@@ -180,7 +202,7 @@ namespace RuinaCoop
                     var stageCount = reader.ReadUInt16();
                     if (stageCount > MaxStages)
                     {
-                        return false;
+                        return Reject(out reason, "Stage count exceeds the limit: " + stageCount + ".");
                     }
                     var stageIds = new HashSet<int>();
                     for (var i = 0; i < stageCount; i++)
@@ -192,16 +214,24 @@ namespace RuinaCoop
                             State = (StoryState)reader.ReadByte(),
                             Name = ReadName(reader)
                         };
-                        if (entry.Id <= 0 || entry.State == StoryState.Close || !stageIds.Add(entry.Id))
+                        if (entry.Id <= 0)
                         {
-                            return false;
+                            return Reject(out reason, "Stage " + i + " has a nonpositive ID: " + entry.Id + ".");
+                        }
+                        if (entry.State == StoryState.Close)
+                        {
+                            return Reject(out reason, "Stage " + i + " is closed.");
+                        }
+                        if (!stageIds.Add(entry.Id))
+                        {
+                            return Reject(out reason, "Stage " + i + " repeats ID " + entry.Id + ".");
                         }
                         result.Stages.Add(entry);
                     }
                     var floorCount = reader.ReadByte();
                     if (floorCount > MaxFloors)
                     {
-                        return false;
+                        return Reject(out reason, "Floor count exceeds the limit: " + floorCount + ".");
                     }
                     var floorIds = new HashSet<SephirahType>();
                     for (var i = 0; i < floorCount; i++)
@@ -213,12 +243,12 @@ namespace RuinaCoop
                         };
                         if (!floorIds.Add(entry.Sephirah))
                         {
-                            return false;
+                            return Reject(out reason, "Floor " + i + " repeats ID " + entry.Sephirah + ".");
                         }
                         var unitCount = reader.ReadByte();
                         if (unitCount > MaxUnitsPerFloor)
                         {
-                            return false;
+                            return Reject(out reason, "Floor " + i + " has too many librarians: " + unitCount + ".");
                         }
                         for (var unit = 0; unit < unitCount; unit++)
                         {
@@ -226,19 +256,30 @@ namespace RuinaCoop
                         }
                         result.Floors.Add(entry);
                     }
-                    if (stream.Position != stream.Length ||
-                        result.SelectedStageId != 0 && !stageIds.Contains(result.SelectedStageId))
+                    if (stream.Position != stream.Length)
                     {
-                        return false;
+                        return Reject(out reason, "Packet has trailing bytes.");
+                    }
+                    if (result.SelectedStageId != 0 && !stageIds.Contains(result.SelectedStageId))
+                    {
+                        return Reject(out reason, "Selected stage ID is not in the stage list: " +
+                            result.SelectedStageId + ".");
                     }
                     snapshot = result;
                     return true;
                 }
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                reason = "Malformed packet: " + exception.GetType().Name + ": " + exception.Message;
                 return false;
             }
+        }
+
+        private static bool Reject(out string reason, string message)
+        {
+            reason = message;
+            return false;
         }
 
         private static void WriteName(BinaryWriter writer, string name)

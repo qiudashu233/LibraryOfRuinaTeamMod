@@ -144,7 +144,7 @@ namespace RuinaCoop
             {
                 return;
             }
-            _lobbyEchoToken = "RC5T:" + RelayAuth.NewChallenge();
+            _lobbyEchoToken = "RC6T:" + RelayAuth.NewChallenge();
             _lobbyEchoDeadline = Time.realtimeSinceStartup + 10f;
             if (!_room.SendChatString(_lobbyEchoToken))
             {
@@ -210,9 +210,16 @@ namespace RuinaCoop
                     return;
                 }
 
-                _latestContent = content;
                 snapshot.Sequence = ++_sequence;
-                _latestPacket = snapshot.Encode(_room.Id.Value);
+                var packet = snapshot.Encode(_room.Id.Value);
+                ProgressSnapshot decoded;
+                string decodeReason;
+                if (!ProgressSnapshot.TryDecode(packet, _room.Id.Value, out decoded, out decodeReason))
+                {
+                    throw new InvalidOperationException("Host snapshot failed local validation: " + decodeReason);
+                }
+                _latestContent = content;
+                _latestPacket = packet;
                 LatestSnapshot = snapshot;
                 _onSnapshot(snapshot);
                 foreach (var connection in _guests.Values)
@@ -221,7 +228,8 @@ namespace RuinaCoop
                 }
                 Status = "Sharing host progress with " + _guests.Count + " guest(s).";
                 Debug.Log("[RuinaCoop] Progress snapshot " + snapshot.Sequence + ": " +
-                    snapshot.Stages.Count + " stages, " + snapshot.Floors.Count + " floors.");
+                    snapshot.Stages.Count + " stages, " + snapshot.Floors.Count +
+                    " floors, " + packet.Length + " bytes; local decode PASS.");
             }
             catch (Exception exception)
             {
@@ -523,10 +531,12 @@ namespace RuinaCoop
                     return;
                 }
                 ProgressSnapshot snapshot;
-                if (!ProgressSnapshot.TryDecode(bytes, _room.Id.Value, out snapshot))
+                string decodeReason;
+                if (!ProgressSnapshot.TryDecode(bytes, _room.Id.Value, out snapshot, out decodeReason))
                 {
-                    Status = "Rejected an invalid host progress packet.";
-                    Debug.LogWarning("[RuinaCoop] Invalid progress packet rejected.");
+                    Status = "Rejected host progress: " + decodeReason;
+                    Debug.LogWarning("[RuinaCoop] Invalid progress packet rejected (" +
+                        bytes.Length + " bytes): " + decodeReason);
                     return;
                 }
                 if (LatestSnapshot != null && snapshot.Sequence <= LatestSnapshot.Sequence)
