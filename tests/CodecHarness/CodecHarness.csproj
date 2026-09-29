@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../src/RuinaCoop/ProgressSnapshot.cs" Link="ProgressSnapshot.cs" />
+    <Compile Include="../../src/RuinaCoop/RelayAuth.cs" Link="RelayAuth.cs" />
   </ItemGroup>
 </Project>

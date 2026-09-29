@@ -67,7 +67,37 @@ Check(!ProgressSnapshot.TryDecode(damaged, roomId, out _), "wire version");
 damaged = (byte[])packet.Clone();
 BitConverter.GetBytes(99999).CopyTo(damaged, 25);
 Check(!ProgressSnapshot.TryDecode(damaged, roomId, out _), "selected stage must exist");
-Console.WriteLine($"PASS: 12 codec checks; snapshot {packet.Length} bytes.");
+var challenge = RelayAuth.NewChallenge();
+Check(challenge.Length == 32 && challenge != RelayAuth.NewChallenge(), "random challenge");
+Check(RelayAuth.TryReadChallenge(RelayAuth.ChallengePacket(challenge), out var parsedChallenge) &&
+      parsedChallenge == challenge, "challenge packet");
+Check(RelayAuth.TryReadAccepted(RelayAuth.AcceptedPacket(challenge), out var acceptedChallenge) &&
+      acceptedChallenge == challenge, "accepted packet");
+var proof = RelayAuth.ProofMessage(challenge, 76561198377244747UL, roomId);
+Check(RelayAuth.IsProofMessage(proof), "proof format");
+Check(RelayAuth.MatchesProof(proof, challenge, 76561198377244747UL, roomId), "valid member proof");
+Check(!RelayAuth.MatchesProof(proof, challenge, 76561198377244748UL, roomId),
+    "proof bound to sender");
+Check(!RelayAuth.MatchesProof(proof, challenge, 76561198377244747UL, roomId + 1),
+    "proof bound to room");
+Check(!RelayAuth.MatchesProof(proof, RelayAuth.NewChallenge(), 76561198377244747UL, roomId),
+    "proof bound to socket challenge");
+var originalCulture = System.Globalization.CultureInfo.CurrentCulture;
+try
+{
+    System.Globalization.CultureInfo.CurrentCulture =
+        System.Globalization.CultureInfo.GetCultureInfo("ar-EG");
+    Check(RelayAuth.MatchesProof(proof, challenge, 76561198377244747UL, roomId),
+        "proof independent of system language");
+}
+finally
+{
+    System.Globalization.CultureInfo.CurrentCulture = originalCulture;
+}
+var alteredChallenge = (byte[])RelayAuth.ChallengePacket(challenge).Clone();
+alteredChallenge[alteredChallenge.Length - 1] = (byte)'Z';
+Check(!RelayAuth.TryReadChallenge(alteredChallenge, out _), "malformed challenge rejected");
+Console.WriteLine($"PASS: 12 codec + 10 lobby-auth checks; snapshot {packet.Length} bytes.");
 if (args.Length == 1)
 {
     System.IO.File.WriteAllBytes(args[0], packet);

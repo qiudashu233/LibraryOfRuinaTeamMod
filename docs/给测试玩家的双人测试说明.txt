@@ -1,6 +1,6 @@
 《废墟图书馆》Ruina Coop 双人测试说明
 
-请房主和测试玩家都使用同一个压缩包：RuinaCoop-stage2-v4-two-player-test.zip。
+请房主和测试玩家都使用同一个压缩包：RuinaCoop-stage2-v5-relay-auth-test.zip。旧的 v4 包无法与本包互连。
 这次只测试“加入房间、看到房主进度、同步下一关选择、离开房间”。不用真的开始接待，也不用修改卡组。
 
 一、两个人都先安装
@@ -21,6 +21,7 @@
 2. 按 F9 打开联机面板，点“Create public room (max 5)”。
 3. 把面板上的“Room ID”数字发给测试玩家。
 4. 确认右侧“Host progress”已经显示自己的章节、楼层和馆员。如果仍显示“Progress waiting”，请确认已经进入图书馆存档。
+5. 可以先点左侧“Test Steam room messages”。显示“PASS: Steam room message and sender ID.”后，再让测试玩家加入。
 
 三、测试玩家操作
 

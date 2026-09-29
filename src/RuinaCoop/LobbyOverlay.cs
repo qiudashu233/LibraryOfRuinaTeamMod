@@ -112,6 +112,14 @@ namespace RuinaCoop
                     }
                     GUI.enabled = true;
                     GUILayout.Label("Local self-test: " + _localSelfTest.Status);
+                    if (_relay != null)
+                    {
+                        if (GUILayout.Button("Test Steam room messages"))
+                        {
+                            _relay.StartLobbyEchoTest();
+                        }
+                        GUILayout.Label("Room message test: " + _relay.LobbyEchoStatus);
+                    }
                 }
                 if (GUILayout.Button("Leave room"))
                 {
@@ -181,7 +189,19 @@ namespace RuinaCoop
             GUILayout.Label(_relay == null ? "Relay unavailable." : _relay.Status);
             if (_progress == null)
             {
-                GUILayout.Label("Waiting for the host to load a library save.");
+                if (_isHost)
+                {
+                    GUILayout.Label("Load a library save to share host progress.");
+                }
+                else if (_relay != null && _relay.Status.StartsWith("Host progress relay disconnected:",
+                    StringComparison.Ordinal))
+                {
+                    GUILayout.Label("Host connection closed; leave and rejoin after checking both logs.");
+                }
+                else
+                {
+                    GUILayout.Label("Waiting for host progress and room verification.");
+                }
                 GUILayout.EndArea();
                 return;
             }
@@ -347,7 +367,6 @@ namespace RuinaCoop
                         _status = "Room host metadata is invalid.";
                         return;
                     }
-
                     _currentLobby = room;
                     _hostId = (SteamId)hostValue;
                     _isHost = false;

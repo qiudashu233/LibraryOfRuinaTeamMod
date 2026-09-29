@@ -19,11 +19,12 @@ namespace RuinaCoop
         private readonly Action<Action> _onMainThread;
         private readonly Action<ProgressSnapshot> _onSnapshot;
         private readonly Dictionary<ulong, Connection> _guests = new Dictionary<ulong, Connection>();
-        private readonly Dictionary<ulong, PendingGuest> _pendingGuests = new Dictionary<ulong, PendingGuest>();
+        private readonly Dictionary<uint, PendingGuest> _pendingGuests = new Dictionary<uint, PendingGuest>();
         private sealed class PendingGuest
         {
             internal Connection Connection;
             internal float Deadline;
+            internal string Challenge;
         }
         private HostRelaySocket _hostSocket;
         private GuestRelayConnection _guestConnection;
@@ -33,8 +34,14 @@ namespace RuinaCoop
         private uint _sequence;
         private bool _stopped;
         private int _selectedStageId;
+        private string _guestChallenge;
+        private float _nextProofTime;
+        private bool _guestAuthenticated;
+        private string _lobbyEchoToken;
+        private float _lobbyEchoDeadline;
 
         internal string Status { get; private set; }
+        internal string LobbyEchoStatus { get; private set; } = "Not run.";
         internal ProgressSnapshot LatestSnapshot { get; private set; }
 
         private RelaySession(Lobby room, SteamId hostId, bool isHost,
@@ -55,6 +62,7 @@ namespace RuinaCoop
             var session = new RelaySession(room, SteamClient.SteamId, true, onMainThread, onSnapshot);
             session._hostSocket = SteamNetworkingSockets.CreateRelaySocket<HostRelaySocket>(VirtualPort);
             session._hostSocket.Owner = session;
+            SteamMatchmaking.OnChatMessage += session.HandleLobbyChat;
             session.Status = "Relay listening; load a library save to share progress.";
             Debug.Log("[RuinaCoop] Relay listener ready on virtual port " + VirtualPort +
                 "; Steam relay status: " + SteamNetworkingUtils.Status + ".");
@@ -87,7 +95,14 @@ namespace RuinaCoop
                 if (_isHost)
                 {
                     _hostSocket.Receive(32);
-                    AuthorizePendingGuests();
+                    ExpirePendingGuests();
+                    RemoveDepartedGuests();
+                    if (_lobbyEchoToken != null && Time.realtimeSinceStartup >= _lobbyEchoDeadline)
+                    {
+                        _lobbyEchoToken = null;
+                        LobbyEchoStatus = "FAIL: room message echo timed out.";
+                        Debug.LogWarning("[RuinaCoop] " + LobbyEchoStatus);
+                    }
                     if (Time.realtimeSinceStartup >= _nextCaptureTime)
                     {
                         _nextCaptureTime = Time.realtimeSinceStartup + SnapshotIntervalSeconds;
@@ -97,6 +112,11 @@ namespace RuinaCoop
                 else
                 {
                     _guestConnection.Receive(32);
+                    if (_guestChallenge != null && !_guestAuthenticated &&
+                        Time.realtimeSinceStartup >= _nextProofTime)
+                    {
+                        SendLobbyProof();
+                    }
                 }
             }
             catch (Exception exception)
@@ -118,6 +138,24 @@ namespace RuinaCoop
             return true;
         }
 
+        internal void StartLobbyEchoTest()
+        {
+            if (!_isHost || _stopped || !SteamClient.IsValid)
+            {
+                return;
+            }
+            _lobbyEchoToken = "RC5T:" + RelayAuth.NewChallenge();
+            _lobbyEchoDeadline = Time.realtimeSinceStartup + 10f;
+            if (!_room.SendChatString(_lobbyEchoToken))
+            {
+                _lobbyEchoToken = null;
+                LobbyEchoStatus = "FAIL: Steam rejected the room message.";
+                return;
+            }
+            LobbyEchoStatus = "Waiting for Steam room message echo...";
+            Debug.Log("[RuinaCoop] Steam room message self-test sent.");
+        }
+
         internal void Stop()
         {
             if (_stopped)
@@ -125,6 +163,10 @@ namespace RuinaCoop
                 return;
             }
             _stopped = true;
+            if (_isHost)
+            {
+                SteamMatchmaking.OnChatMessage -= HandleLobbyChat;
+            }
             if (!SteamClient.IsValid)
             {
                 return;
@@ -217,29 +259,21 @@ namespace RuinaCoop
             return false;
         }
 
-        private void AuthorizePendingGuests()
+        private void ExpirePendingGuests()
         {
             if (_pendingGuests.Count == 0)
             {
                 return;
             }
 
-            var resolved = new List<ulong>();
+            var resolved = new List<uint>();
             foreach (var pair in _pendingGuests)
             {
-                if (IsLobbyMember((SteamId)pair.Key) && _guests.Count < ProtocolInfo.MaxPlayers - 1)
+                if (Time.realtimeSinceStartup >= pair.Value.Deadline)
                 {
-                    _guests[pair.Key] = pair.Value.Connection;
-                    SendSnapshot(pair.Value.Connection);
-                    Status = "Sharing host progress with " + _guests.Count + " guest(s).";
-                    Debug.Log("[RuinaCoop] Relay member authorized: " + pair.Key + ".");
-                    resolved.Add(pair.Key);
-                }
-                else if (Time.realtimeSinceStartup >= pair.Value.Deadline)
-                {
-                    pair.Value.Connection.Close(false, 2001, "Not in the Steam room");
-                    Debug.LogWarning("[RuinaCoop] Relay member rejected after waiting: " + pair.Key +
-                        "; lobby members " + _room.MemberCount + ".");
+                    pair.Value.Connection.Close(false, 2001, "Lobby proof not received");
+                    Debug.LogWarning("[RuinaCoop] Relay challenge timed out for connection " +
+                        pair.Key + "; lobby members " + _room.MemberCount + ".");
                     resolved.Add(pair.Key);
                 }
             }
@@ -249,44 +283,203 @@ namespace RuinaCoop
             }
         }
 
+        private void RemoveDepartedGuests()
+        {
+            var departed = new List<ulong>();
+            foreach (var pair in _guests)
+            {
+                if (!IsLobbyMember((SteamId)pair.Key))
+                {
+                    pair.Value.Close(false, 2001, "Member left the Steam room");
+                    departed.Add(pair.Key);
+                }
+            }
+            foreach (var id in departed)
+            {
+                _guests.Remove(id);
+                Debug.Log("[RuinaCoop] Relay member left the room: " + id + ".");
+            }
+        }
+
         private void GuestConnected(Connection connection, ConnectionInfo info)
         {
             _onMainThread(() =>
             {
-                if (_stopped || !info.Identity.IsSteamId || info.Identity.SteamId.Value == 0 ||
-                    info.Identity.SteamId == _hostId)
+                if (_stopped)
                 {
-                    Debug.LogWarning("[RuinaCoop] Relay peer rejected: invalid identity " +
-                        info.Identity + ".");
-                    connection.Close(false, 2001, "Invalid room identity");
+                    connection.Close(false, 2001, "Room closed");
                     return;
                 }
-                var guestId = info.Identity.SteamId.Value;
-                _pendingGuests[guestId] = new PendingGuest
+                var challenge = RelayAuth.NewChallenge();
+                _pendingGuests[connection.Id] = new PendingGuest
                 {
                     Connection = connection,
-                    Deadline = Time.realtimeSinceStartup + 5f
+                    Deadline = Time.realtimeSinceStartup + 15f,
+                    Challenge = challenge
                 };
-                Status = "Verifying " + _pendingGuests.Count + " relay guest(s) against room members...";
-                Debug.Log("[RuinaCoop] Relay peer connected pending room check: " + guestId +
-                    "; lobby members " + _room.MemberCount + ".");
+                var result = connection.SendMessage(RelayAuth.ChallengePacket(challenge), SendType.Reliable);
+                if (result != Steamworks.Result.OK)
+                {
+                    _pendingGuests.Remove(connection.Id);
+                    connection.Close(false, 2001, "Could not send lobby challenge");
+                    Debug.LogWarning("[RuinaCoop] Relay challenge send failed on connection " +
+                        connection.Id + ": " + result + ".");
+                    return;
+                }
+                Status = "Verifying " + _pendingGuests.Count + " relay guest(s) in the Steam room...";
+                Debug.Log("[RuinaCoop] Relay challenge sent on connection " + connection.Id +
+                    "; callback identity " + info.Identity + "; lobby members " +
+                    _room.MemberCount + ".");
             });
         }
 
-        private void GuestDisconnected(ConnectionInfo info)
+        private void GuestDisconnected(Connection connection, ConnectionInfo info)
         {
             _onMainThread(() =>
             {
-                if (_stopped || !info.Identity.IsSteamId)
+                if (_stopped)
                 {
                     return;
                 }
-                var guestId = info.Identity.SteamId.Value;
-                _pendingGuests.Remove(guestId);
-                _guests.Remove(guestId);
-                Status = "Relay connected to " + _guests.Count + " guest(s).";
-                Debug.Log("[RuinaCoop] Guest relay disconnected: " + guestId +
-                    ", reason " + info.EndReason + ".");
+                _pendingGuests.Remove(connection.Id);
+                ulong guestId = 0;
+                foreach (var pair in _guests)
+                {
+                    if (pair.Value.Id == connection.Id)
+                    {
+                        guestId = pair.Key;
+                        break;
+                    }
+                }
+                if (guestId != 0)
+                {
+                    _guests.Remove(guestId);
+                }
+                Status = "Sharing host progress with " + _guests.Count + " guest(s).";
+                Debug.Log("[RuinaCoop] Guest relay disconnected: connection " + connection.Id +
+                    ", member " + guestId + ", reason " + info.EndReason + ".");
+            });
+        }
+
+        private void HandleLobbyChat(Lobby room, Friend sender, string message)
+        {
+            if (!_isHost || room.Id != _room.Id)
+            {
+                return;
+            }
+            if (_lobbyEchoToken != null && sender.Id == _hostId && message == _lobbyEchoToken)
+            {
+                _onMainThread(() =>
+                {
+                    if (_stopped || _lobbyEchoToken != message)
+                    {
+                        return;
+                    }
+                    _lobbyEchoToken = null;
+                    LobbyEchoStatus = "PASS: Steam room message and sender ID.";
+                    Debug.Log("[RuinaCoop] " + LobbyEchoStatus);
+                });
+                return;
+            }
+            if (!RelayAuth.IsProofMessage(message))
+            {
+                return;
+            }
+            _onMainThread(() =>
+            {
+                if (_stopped || sender.Id == _hostId || !IsLobbyMember(sender.Id))
+                {
+                    return;
+                }
+                uint connectionId = 0;
+                PendingGuest pending = null;
+                foreach (var pair in _pendingGuests)
+                {
+                    if (RelayAuth.MatchesProof(message, pair.Value.Challenge,
+                        sender.Id.Value, _room.Id.Value))
+                    {
+                        connectionId = pair.Key;
+                        pending = pair.Value;
+                        break;
+                    }
+                }
+                if (pending == null)
+                {
+                    if (!_guests.ContainsKey(sender.Id.Value))
+                    {
+                        Debug.LogWarning("[RuinaCoop] Lobby proof did not match a pending relay connection from " +
+                            sender.Id + ".");
+                    }
+                    return;
+                }
+                _pendingGuests.Remove(connectionId);
+                if (_guests.Count >= ProtocolInfo.MaxPlayers - 1 || _guests.ContainsKey(sender.Id.Value))
+                {
+                    pending.Connection.Close(false, 2001, "Room is full or member already connected");
+                    return;
+                }
+                _guests.Add(sender.Id.Value, pending.Connection);
+                var accepted = pending.Connection.SendMessage(
+                    RelayAuth.AcceptedPacket(pending.Challenge), SendType.Reliable);
+                if (accepted != Steamworks.Result.OK)
+                {
+                    _guests.Remove(sender.Id.Value);
+                    pending.Connection.Close(false, 2001, "Could not acknowledge lobby proof");
+                    Debug.LogWarning("[RuinaCoop] Relay proof acknowledgment failed: " + accepted + ".");
+                    return;
+                }
+                SendSnapshot(pending.Connection);
+                Status = "Sharing host progress with " + _guests.Count + " guest(s).";
+                Debug.Log("[RuinaCoop] Relay member authorized by lobby proof: " +
+                    sender.Id + ", connection " + connectionId + ".");
+            });
+        }
+
+        private void ReceiveChallenge(string challenge)
+        {
+            _onMainThread(() =>
+            {
+                if (_stopped || _isHost || _guestAuthenticated)
+                {
+                    return;
+                }
+                if (_guestChallenge != null && _guestChallenge != challenge)
+                {
+                    _guestConnection.Close();
+                    Status = "Host sent conflicting relay challenges.";
+                    return;
+                }
+                _guestChallenge = challenge;
+                SendLobbyProof();
+            });
+        }
+
+        private void SendLobbyProof()
+        {
+            _nextProofTime = Time.realtimeSinceStartup + 1f;
+            var message = RelayAuth.ProofMessage(_guestChallenge,
+                SteamClient.SteamId.Value, _room.Id.Value);
+            if (!_room.SendChatString(message))
+            {
+                Status = "Could not verify room membership; retrying...";
+                Debug.LogWarning("[RuinaCoop] Lobby proof send failed; retrying.");
+                return;
+            }
+            Status = "Verifying room membership with host...";
+            Debug.Log("[RuinaCoop] Lobby proof sent for room " + _room.Id + ".");
+        }
+
+        private void ReceiveAccepted(string challenge)
+        {
+            _onMainThread(() =>
+            {
+                if (_stopped || _isHost || challenge != _guestChallenge)
+                {
+                    return;
+                }
+                _guestAuthenticated = true;
+                Status = "Room membership verified; waiting for host progress.";
+                Debug.Log("[RuinaCoop] Host confirmed lobby proof for room " + _room.Id + ".");
             });
         }
 
@@ -300,12 +493,6 @@ namespace RuinaCoop
                 }
                 Debug.Log("[RuinaCoop] Host relay connected callback: identity " +
                     info.Identity + ", expected " + _hostId + ".");
-                if (info.Identity.IsSteamId && info.Identity.SteamId != _hostId)
-                {
-                    _guestConnection.Close();
-                    Status = "Relay peer was not the room host.";
-                    return;
-                }
                 Status = "Connected to host; waiting for progress.";
             });
         }
@@ -328,6 +515,11 @@ namespace RuinaCoop
             {
                 if (_stopped)
                 {
+                    return;
+                }
+                if (!_guestAuthenticated)
+                {
+                    Debug.LogWarning("[RuinaCoop] Snapshot arrived before lobby proof confirmation.");
                     return;
                 }
                 ProgressSnapshot snapshot;
@@ -384,9 +576,7 @@ namespace RuinaCoop
             {
                 Debug.Log("[RuinaCoop] Incoming relay connection " + connection.Id +
                     ": identity " + info.Identity + ".");
-                if (Owner == null || Owner._stopped || Owner._guests.Count + Owner._pendingGuests.Count >= 8 ||
-                    info.Identity.IsSteamId && (info.Identity.SteamId.Value == 0 ||
-                    info.Identity.SteamId == Owner._hostId))
+                if (Owner == null || Owner._stopped || Owner._guests.Count + Owner._pendingGuests.Count >= 8)
                 {
                     Debug.LogWarning("[RuinaCoop] Incoming relay connection rejected before accept.");
                     connection.Close(false, 2001, "Invalid or excessive relay peer");
@@ -413,7 +603,7 @@ namespace RuinaCoop
                 base.OnDisconnected(connection, info);
                 if (Owner != null)
                 {
-                    Owner.GuestDisconnected(info);
+                    Owner.GuestDisconnected(connection, info);
                 }
             }
 
@@ -462,7 +652,19 @@ namespace RuinaCoop
                 var bytes = CopyMessage(data, size);
                 if (bytes != null)
                 {
-                    Owner.ReceiveHostMessage(bytes);
+                    string challenge;
+                    if (RelayAuth.TryReadChallenge(bytes, out challenge))
+                    {
+                        Owner.ReceiveChallenge(challenge);
+                    }
+                    else if (RelayAuth.TryReadAccepted(bytes, out challenge))
+                    {
+                        Owner.ReceiveAccepted(challenge);
+                    }
+                    else
+                    {
+                        Owner.ReceiveHostMessage(bytes);
+                    }
                 }
             }
         }
