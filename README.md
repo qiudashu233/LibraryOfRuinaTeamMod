@@ -1,6 +1,6 @@
 # Ruina Coop
 
-《废墟图书馆》合作联机 Mod，按[设计方案](docs/联机Mod设计方案.md)分阶段开发。阶段 0 已验证游戏加载器与 Harmony 接入。阶段 1 的双账号房间核心流程已验证。阶段 2 的 F9 只读进度镜像和计划选关已通过双端测试。阶段 3 的 F9 角色认领原型也已通过双端测试；原版接待界面、卡组锁和战斗联机尚未实现。
+《废墟图书馆》合作联机 Mod，按[设计方案](docs/联机Mod设计方案.md)分阶段开发。阶段 0 已验证游戏加载器与 Harmony 接入。阶段 1 的双账号房间核心流程已验证。阶段 2 的 F9 只读进度镜像和计划选关已通过双端测试。阶段 3 的 v7 F9 角色认领原型也已通过双端测试；当前 v8 增加卡组编辑、库存同步和权限锁，等待游戏内双端验收。原版接待界面与合作战斗尚未接入。
 
 暂停开发时的版本、已完成内容、未完成目标和运行测试步骤见[当前状态与接续指南](docs/当前状态与接续指南.md)。
 
@@ -16,7 +16,7 @@ pwsh -File scripts/pack.ps1 -GameDir 'D:\game\steamapps\common\Library Of Ruina'
 
 关闭游戏后执行 `pwsh -File scripts/install-local.ps1` 安装测试包；脚本会先把旧包备份到忽略目录 `artifacts/install-backups`。也可以手动将整个 `dist/RuinaCoop` 文件夹放入游戏的 `LibraryOfRuina_Data/Mods`，再通过 Steam 的 **LOR With Mods** 启动游戏，并在 Mod 列表中勾选 **Ruina Coop (Development)**。该启动选项使用 `-mod` 参数；见 [SteamDB 的游戏配置](https://steamdb.info/app/1256670/config/)。初次加载时应在 `%USERPROFILE%\\AppData\\LocalLow\\Project Moon\\LibraryOfRuina\\Player.log` 中看到 `[RuinaCoop] Stage 0 bootstrap loaded` 和 `[RuinaCoop] Harmony game-loop probe reached`。未验证的游戏程序集版本会拒绝打补丁并记录 SHA-256。
 
-当前不会写入游戏存档或修改原版程序集。初版范围已定为原版游戏加本 Mod，客人不会获得永久关卡解锁。
+Mod 不修改原版程序集。v8 卡组编辑只改动房主游戏模型，房主仍可由原版正常保存；客人会话期间禁止本地存档写入，主机快照不载入客人的游戏模型。初版范围已定为原版游戏加本 Mod，客人不会获得永久关卡解锁。
 ## 阶段 1 房间测试
 
 在主菜单按 **F9** 打开房间面板。Steam 状态应为 `ready`。房主点击 `Create public room (max 5)` 或 `Create friends-only room (max 5)`，通过面板中的 Room ID 或 `Invite Steam friends` 邀请客人。客人可以输入房间 ID、搜索公开房间，或接受 Steam 邀请。双方都能查看成员列表并离开房间。房主离开时，客人自动退出房间。
@@ -28,4 +28,10 @@ pwsh -File scripts/pack.ps1 -GameDir 'D:\game\steamapps\common\Library Of Ruina'
 
 ## 阶段 3 角色认领原型
 
-房主在 F9 的 **Host progress** 页选关，再到 **Role claims** 页选楼层。玩家可认领或释放该楼层馆员，归属由房主通过 Steam Relay 裁定并同步。当前只是准备面板的网络原型，不锁定原版卡组编辑。详见 [阶段 3 验证记录](docs/阶段3认领验证.md)和[测试玩家操作说明](docs/给测试玩家的认领测试说明.txt)。
+房主在 F9 的 **Host progress** 页选关，再到 **Role claims** 页选楼层。玩家可认领或释放该楼层馆员，归属由房主通过 Steam Relay 裁定并同步。v7 已验证的记录见 [阶段 3 认领验证](docs/阶段3认领验证.md)。
+
+## 阶段 3 卡组测试版（v8）
+
+认领馆员后，在 **Deck editor** 添加或移除普通战斗书页。房主检查权限、库存与修订号，再执行原版装备规则并同步结果；原版改卡入口也受权限限制。特殊核心书保持只读，接待期间冻结准备操作，断线角色由房主确认清理后重新认领。
+
+本机检查与尚待验证事项见 [阶段 3 卡组验证](docs/阶段3卡组验证.md)，双人操作见 [给测试玩家的卡组测试说明](docs/给测试玩家的卡组测试说明.txt)。v8 与 v7 协议不兼容，双端需使用同一测试包。本轮仍停留在 F9 准备原型，尚不支持合作接待。

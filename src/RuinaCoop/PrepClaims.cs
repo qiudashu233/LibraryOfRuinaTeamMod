@@ -30,6 +30,11 @@ namespace RuinaCoop
         internal uint Revision { get; private set; }
         internal byte FloorId { get { return _floorId; } }
 
+        internal ulong OwnerAt(byte unitIndex)
+        {
+            return unitIndex < _owners.Length ? _owners[unitIndex] : 0;
+        }
+
         internal void Reconcile(ProgressSnapshot snapshot)
         {
             if (_stageId != snapshot.SelectedStageId)

@@ -10,5 +10,8 @@
     <Compile Include="../../src/RuinaCoop/PrepClaims.cs" Link="PrepClaims.cs" />
     <Compile Include="../../src/RuinaCoop/ClaimProtocol.cs" Link="ClaimProtocol.cs" />
     <Compile Include="../../src/RuinaCoop/RelayAuth.cs" Link="RelayAuth.cs" />
+    <Compile Include="../../src/RuinaCoop/DeckProtocol.cs" Link="DeckProtocol.cs" />
+    <Compile Include="../../src/RuinaCoop/DeckAuthority.cs" Link="DeckAuthority.cs" />
+    <Compile Include="../../src/RuinaCoop/DeckMirror.cs" Link="DeckMirror.cs" />
   </ItemGroup>
 </Project>

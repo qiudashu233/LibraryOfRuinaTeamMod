@@ -23,7 +23,16 @@ namespace RuinaCoop
             }
 
             var harmony = new Harmony("ruinacoop.bootstrap");
-            harmony.Patch(original, postfix: new HarmonyMethod(postfix));
+            try
+            {
+                DeckGuard.Install(harmony);
+                harmony.Patch(original, postfix: new HarmonyMethod(postfix));
+            }
+            catch
+            {
+                harmony.UnpatchSelf();
+                throw;
+            }
         }
     }
 }
