@@ -79,11 +79,13 @@ namespace RuinaCoop
             {
                 _relay.Tick();
             }
+            NativeDeckEditor.Tick(_relay);
             _localSelfTest.Tick();
         }
 
         private void OnGUI()
         {
+            NativeDeckEditor.DrawSessionControls(_relay);
             if (!_visible)
             {
                 return;
@@ -474,6 +476,7 @@ namespace RuinaCoop
         private void OnProgressSnapshot(ProgressSnapshot snapshot)
         {
             _progress = snapshot;
+            NativeDeckEditor.OnSnapshot(_relay, snapshot);
         }
 
         private void CreateRoom(bool isPublic)
@@ -673,6 +676,9 @@ namespace RuinaCoop
 
         private void LeaveRoom()
         {
+            // Restore temporary UI bindings while the guest save guards still
+            // apply. A room's late reply must never reopen an exited page.
+            NativeDeckEditor.Close();
             _localSelfTest.Stop();
             _localSelfTest = new LocalSelfTest();
             if (_relay != null)

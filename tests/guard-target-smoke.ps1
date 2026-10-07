@@ -165,6 +165,16 @@ function Assert-GuardPrefix([Reflection.MethodInfo]$Original, [Reflection.Method
                 throw "Instance mismatch: $Original / $($Prefix.Name)"
             }
         }
+        elseif ($name -eq '__originalMethod') {
+            if (-not $parameterType.IsAssignableFrom([Reflection.MethodInfo])) {
+                throw "Original-method injection mismatch: $($Prefix.Name)"
+            }
+        }
+        elseif ($name -eq '__args') {
+            if ($parameterType -ne [object[]]) {
+                throw "Argument-array injection mismatch: $($Prefix.Name)"
+            }
+        }
         elseif ($name -eq '__state') {
             if ($parameterType -ne [bool] -or -not $parameter.IsOut) {
                 throw 'Library load prefix must provide an out bool __state.'

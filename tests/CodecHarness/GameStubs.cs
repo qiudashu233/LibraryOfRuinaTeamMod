@@ -1,5 +1,15 @@
 using System.Collections.Generic;
 
+namespace UnityEngine
+{
+    internal struct Color
+    {
+        internal float r, g, b, a;
+        internal Color(float red, float green, float blue, float alpha = 1f)
+        { r = red; g = green; b = blue; a = alpha; }
+    }
+}
+
 namespace UI
 {
     internal enum StoryState { FirstOpen = 0, Open = 1, Clear = 2, Close = 3 }
@@ -35,11 +45,38 @@ namespace RuinaCoop
         internal List<UnitDataModel> GetUnitDataList() => Units;
     }
 
+    internal enum Gender { F = 0, M = 1, N = 2, Creature = 3, EGO = 4 }
+
+    internal sealed class UnitCustomizingData
+    {
+        internal bool UseCustomData;
+        internal int height = 170;
+        internal LorId specialCustomID = new LorId { id = -1 };
+        internal int frontHairID = -1, backHairID = -1, eyeID = -1,
+            browID = -1, mouthID = -1, headID = -1;
+        internal UnityEngine.Color hairColor = new UnityEngine.Color(0, 0, 0);
+        internal UnityEngine.Color eyeColor = new UnityEngine.Color(0, 0, 0);
+        internal UnityEngine.Color skinColor = new UnityEngine.Color(1, 1, 1);
+    }
+
+    internal sealed class PassiveXmlInfo { internal LorId id; }
+    internal sealed class BookPassiveInfo { internal PassiveXmlInfo passive; }
+
     internal sealed class UnitDataModel
     {
         internal string name;
         internal BookModel bookItem;
         internal bool Locked;
+        internal int MaxHp = 100;
+        internal int Break = 50;
+        internal BookModel defaultBook;
+        internal BookModel AppearanceBook;
+        internal BookModel CustomBookItem => AppearanceBook ?? bookItem;
+        internal UnitCustomizingData customizeData = new UnitCustomizingData();
+        internal bool isSephirah;
+        internal Gender gender;
+        internal Gender appearanceType;
+        internal string workshopSkin;
         internal bool IsChangeItemLock() => Locked;
     }
 
@@ -53,6 +90,10 @@ namespace RuinaCoop
         internal bool Locked;
         internal readonly List<LOR_DiceSystem.DiceCardXmlInfo> Cards =
             new List<LOR_DiceSystem.DiceCardXmlInfo>();
+        internal string CharacterSkin = "";
+        internal readonly List<BookPassiveInfo> Passives = new List<BookPassiveInfo>();
+        internal string GetCharacterName() => CharacterSkin;
+        internal List<BookPassiveInfo> GetPassiveInfoList(bool ignored) => Passives;
         internal int GetDeckSize() => DeckSize;
         internal bool IsFixedDeck() => Fixed;
         internal bool IsMultiDeck() => MultiDeck;

@@ -234,6 +234,21 @@ namespace HarmonyLib
 
 namespace RuinaCoop
 {
+    internal static class NativeDeckModels
+    {
+        internal static bool IsConstructingMirrors;
+        internal static UnitDataModel MirrorUnit;
+        internal static BookModel MirrorBook;
+        internal static DeckModel MirrorDeck;
+        internal static bool IsMirrorUnit(UnitDataModel value) { return value != null && ReferenceEquals(value, MirrorUnit); }
+        internal static bool IsMirrorBook(BookModel value) { return value != null && ReferenceEquals(value, MirrorBook); }
+        internal static bool IsMirrorDeck(DeckModel value) { return value != null && ReferenceEquals(value, MirrorDeck); }
+    }
+    internal static class NativeDeckEditor
+    {
+        internal static bool ConsumeClick;
+        internal static bool TryHandleDeckUi(object instance, MethodBase method, object[] args) { return ConsumeClick; }
+    }
     internal sealed class RelaySession
     {
         internal bool IsGuestSession;

@@ -10,7 +10,7 @@ namespace RuinaCoop
     internal sealed class ProgressSnapshot
     {
         private const uint Magic = 0x52435053;
-        private const byte WireVersion = 3;
+        private const byte WireVersion = 4;
         private const int MaxPacketBytes = 65536;
         private const int MaxStages = 512;
         private const int MaxFloors = 12;
@@ -33,6 +33,9 @@ namespace RuinaCoop
 
         internal sealed class UnitDeckEntry
         {
+            // Stable host unit token; zero means no supported editable identity.
+            internal ulong UnitIdentity;
+            internal readonly UnitDisplayEntry Display = new UnitDisplayEntry();
             // Zero identifies an absent or unsupported key page, which is view only.
             internal int BookId;
             internal int BookInstanceId;
@@ -40,6 +43,36 @@ namespace RuinaCoop
             internal bool Fixed;
             internal bool MultiDeck;
             internal readonly List<int> Cards = new List<int>();
+        }
+
+        // Read-only presentation data for isolated native editor models. No save graph,
+        // inventory references, arbitrary resource path, or render texture index crosses the wire.
+        internal sealed class UnitDisplayEntry
+        {
+            internal bool Available;
+            internal int MaxHp;
+            internal int Break;
+            internal readonly List<int> PassiveIds = new List<int>();
+            internal bool AppearanceAvailable;
+            internal int DefaultBookId;
+            internal int CustomBookId;
+            internal bool IsSephirah;
+            internal byte Gender;
+            internal byte AppearanceType;
+            internal string CharacterSkin = "";
+            internal bool UseCustom;
+            internal int SpecialCustomId = -1;
+            internal int FrontHair = -1;
+            internal int BackHair = -1;
+            internal int Eye = -1;
+            internal int Brow = -1;
+            internal int Mouth = -1;
+            internal int Head = -1;
+            // RGBA, most significant byte R, least significant byte A.
+            internal uint HairColor;
+            internal uint EyeColor;
+            internal uint SkinColor;
+            internal int Height = 170;
         }
 
         internal sealed class CardStockEntry
@@ -210,7 +243,7 @@ namespace RuinaCoop
         {
             snapshot = null;
             reason = null;
-            if (packet == null || packet.Length > MaxPacketBytes || packet.Length < 46)
+            if (packet == null || packet.Length > MaxPacketBytes || packet.Length < 47)
             {
                 return Reject(out reason, "Packet size is invalid.");
             }

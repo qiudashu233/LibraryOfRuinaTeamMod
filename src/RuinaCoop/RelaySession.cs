@@ -59,10 +59,42 @@ namespace RuinaCoop
         internal string Status { get; private set; }
         internal string LobbyEchoStatus { get; private set; } = "Not run.";
         internal string ClaimStatus { get; private set; } = "Choose a stage, then the host chooses a floor.";
-        internal string DeckStatus { get; private set; } = "Choose a stage and floor, then claim a librarian.";
+        private string _deckStatus = "Choose a stage and floor, then claim a librarian.";
+        internal event Action DeckStateChanged;
+        internal string DeckStatus
+        {
+            get { return _deckStatus; }
+            private set
+            {
+                if (_deckStatus == value) return;
+                _deckStatus = value;
+                NotifyDeckStateChanged();
+            }
+        }
         internal ProgressSnapshot LatestSnapshot { get; private set; }
+        internal ulong RoomId { get { return _room.Id.Value; } }
+        internal bool IsHost { get { return _isHost; } }
+        internal bool IsActive { get { return !_stopped; } }
+        internal bool IsReadyForDeck
+        {
+            get { return !_stopped && (_isHost || _guestAuthenticated && _guestConnection != null); }
+        }
         internal bool IsGuestSession { get { return !_stopped && !_isHost; } }
         internal bool DeckRequestPending { get { return _pendingDeckRequest != 0; } }
+
+        private void NotifyDeckStateChanged()
+        {
+            var handlers = DeckStateChanged;
+            if (handlers == null) return;
+            foreach (Action handler in handlers.GetInvocationList())
+            {
+                try { handler(); }
+                catch (Exception exception)
+                {
+                    Debug.LogError("[RuinaCoop] Deck state display failed: " + exception);
+                }
+            }
+        }
         internal bool PreparationFrozen
         {
             get
@@ -302,13 +334,23 @@ namespace RuinaCoop
 
         internal void RequestClaim(byte unitIndex, ClaimAction action)
         {
+            RequestClaim(LatestSnapshot, unitIndex, action);
+        }
+
+        internal bool RequestClaim(ProgressSnapshot expected, byte unitIndex, ClaimAction action)
+        {
             if (_stopped || LatestSnapshot == null || LatestSnapshot.SelectedStageId == 0 ||
                 LatestSnapshot.SelectedFloorId == PrepClaims.NoFloor)
             {
                 ClaimStatus = "Select a stage and floor first.";
-                return;
+                return false;
             }
-            var snapshot = LatestSnapshot;
+            if (!ReferenceEquals(expected, LatestSnapshot))
+            {
+                ClaimStatus = "The displayed librarian list changed; refresh before claiming.";
+                return false;
+            }
+            var snapshot = expected;
             var request = new ClaimRequest
             {
                 RequestId = ++_nextClaimRequest,
@@ -323,7 +365,7 @@ namespace RuinaCoop
                 if (PreparationFrozen || !CaptureAndBroadcast())
                 {
                     ClaimStatus = "Claims are unavailable during reception or before progress is ready.";
-                    return;
+                    return false;
                 }
                 var result = _claims.Apply(SteamClient.SteamId.Value, request.StageId,
                     request.FloorId, request.UnitIndex, request.ExpectedRevision, action);
@@ -332,34 +374,53 @@ namespace RuinaCoop
                 {
                     CaptureAndBroadcast();
                 }
-                return;
+                return result == ClaimResultCode.Accepted;
             }
             if (!_guestAuthenticated || _guestConnection == null)
             {
                 ClaimStatus = "Waiting for host room verification.";
-                return;
+                return false;
             }
             var send = _guestConnection.Connection.SendMessage(
                 ClaimProtocol.EncodeRequest(_room.Id.Value, request), SendType.Reliable);
             ClaimStatus = send == Steamworks.Result.OK
                 ? "Claim request sent; waiting for host."
                 : "Claim request send failed: " + send + ".";
+            return send == Steamworks.Result.OK;
         }
 
         internal void RequestDeckEdit(byte unitIndex, int cardId, DeckAction action)
         {
+            RequestDeckEdit(LatestSnapshot, unitIndex, cardId, action);
+        }
+
+        // Native controls pass the state they actually display. Never combine
+        // an old control's slot index with a newer room/floor/revision.
+        internal bool ValidateDisplayedDeckRequest(ProgressSnapshot expected)
+        {
             if (DeckRequestPending)
             {
                 DeckStatus = "Waiting for the previous deck edit to finish.";
-                return;
+                return false;
             }
             if (_stopped || LatestSnapshot == null || LatestSnapshot.SelectedStageId == 0 ||
                 LatestSnapshot.SelectedFloorId == PrepClaims.NoFloor)
             {
                 DeckStatus = "Choose a stage and floor first.";
-                return;
+                return false;
             }
-            var snapshot = LatestSnapshot;
+            if (!ReferenceEquals(expected, LatestSnapshot))
+            {
+                DeckStatus = "The displayed deck changed; refresh before editing.";
+                return false;
+            }
+            return true;
+        }
+
+        internal bool RequestDeckEdit(ProgressSnapshot expected, byte unitIndex, int cardId, DeckAction action)
+        {
+            if (!ValidateDisplayedDeckRequest(expected)) return false;
+            var snapshot = expected;
             var request = new DeckRequest
             {
                 RequestId = ++_nextDeckRequest,
@@ -376,18 +437,18 @@ namespace RuinaCoop
                 byte vanillaState;
                 var result = ApplyDeckRequest(_hostId.Value, request, out vanillaState);
                 DeckStatus = DeckResultText(result, vanillaState);
-                return;
+                return result == DeckResultCode.Accepted;
             }
             if (!_guestAuthenticated || _guestConnection == null)
             {
                 DeckStatus = "Waiting for host room verification.";
-                return;
+                return false;
             }
             var permission = DeckAuthority.Validate(snapshot, SteamClient.SteamId.Value, request);
             if (permission != DeckResultCode.Accepted)
             {
                 DeckStatus = DeckResultText(permission, 0);
-                return;
+                return false;
             }
             var send = _guestConnection.Connection.SendMessage(
                 DeckProtocol.EncodeRequest(_room.Id.Value, request), SendType.Reliable);
@@ -399,6 +460,7 @@ namespace RuinaCoop
             DeckStatus = send == Steamworks.Result.OK
                 ? "Deck edit sent; waiting for host."
                 : "Deck edit send failed: " + send + ".";
+            return send == Steamworks.Result.OK;
         }
 
         private DeckResultCode ApplyDeckRequest(ulong sender, DeckRequest request,
@@ -475,6 +537,9 @@ namespace RuinaCoop
                 return;
             }
             _stopped = true;
+            _pendingDeckRequest = 0;
+            _deferredDeckReply = null;
+            DeckStatus = "Room session closed.";
             if (ReferenceEquals(DeckGuard.Session, this))
             {
                 DeckGuard.Session = null;
@@ -920,7 +985,16 @@ namespace RuinaCoop
                     return;
                 }
                 LatestSnapshot = snapshot;
-                _onSnapshot(snapshot);
+                try
+                {
+                    _onSnapshot(snapshot);
+                }
+                catch (Exception exception)
+                {
+                    // Display failures cannot prevent transport acknowledgments
+                    // from completing against the state already accepted above.
+                    Debug.LogError("[RuinaCoop] Snapshot display failed: " + exception);
+                }
                 if (_deferredDeckReply.HasValue)
                 {
                     CompleteDeckReply(_deferredDeckReply.Value);

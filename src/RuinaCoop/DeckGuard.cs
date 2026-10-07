@@ -8,7 +8,7 @@ using UnityEngine;
 namespace RuinaCoop
 {
     // Prefixes are installed against the verified vanilla method signatures. A
-    // guest edits DTOs in F9 only; its loaded library never becomes the mirror.
+    // A guest's loaded library never becomes the native editor's mirror.
     internal static class DeckGuard
     {
         [ThreadStatic]
@@ -235,16 +235,19 @@ namespace RuinaCoop
 
         private static bool MayEdit(UnitDataModel unit)
         {
+            if (NativeDeckModels.IsConstructingMirrors || NativeDeckModels.IsMirrorUnit(unit)) return false;
             return Session == null || _authorizedDepth > 0 || _libraryLoadDepth > 0 || Session.CanEditLocalUnit(unit);
         }
 
         private static bool MayEdit(BookModel book)
         {
+            if (NativeDeckModels.IsConstructingMirrors || NativeDeckModels.IsMirrorBook(book)) return false;
             return Session == null || _authorizedDepth > 0 || _libraryLoadDepth > 0 || Session.CanEditLocalBook(book);
         }
 
         private static bool MayEdit(DeckModel deck)
         {
+            if (NativeDeckModels.IsConstructingMirrors || NativeDeckModels.IsMirrorDeck(deck)) return false;
             return Session == null || _authorizedDepth > 0 || _libraryLoadDepth > 0 || Session.CanEditLocalDeck(deck);
         }
 
@@ -296,8 +299,9 @@ namespace RuinaCoop
 
         private static bool DeckVoidPrefix(DeckModel __instance) { return MayEdit(__instance); }
 
-        private static bool UiUnitFieldPrefix(object __instance)
+        private static bool UiUnitFieldPrefix(object __instance, MethodBase __originalMethod, object[] __args)
         {
+            if (NativeDeckEditor.TryHandleDeckUi(__instance, __originalMethod, __args)) return false;
             if (Session == null) return true;
             var name = __instance.GetType().FullName == "UI.UIEquipDeckCardList" ? "currentunit" : "_unitdata";
             var field = AccessTools.Field(__instance.GetType(), name);

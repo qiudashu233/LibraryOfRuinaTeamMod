@@ -231,7 +231,7 @@ internal static class DeckChecks
         }
         Reject(packet.Concat(new byte[] { 0 }).ToArray(), roomId, "deck snapshot trailing data");
         var empty = new ProgressSnapshot().Encode(roomId);
-        Check(empty.Length == 46 && ProgressSnapshot.TryDecode(empty, roomId, out var emptyDecoded) &&
+        Check(empty.Length == 47 && ProgressSnapshot.TryDecode(empty, roomId, out var emptyDecoded) &&
             emptyDecoded.UnitDecks.Count == 0 && emptyDecoded.CardStock.Count == 0,
             "minimum snapshot without a selected floor");
 

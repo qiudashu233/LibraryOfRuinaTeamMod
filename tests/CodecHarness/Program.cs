@@ -186,6 +186,7 @@ var alteredChallenge = (byte[])RelayAuth.ChallengePacket(challenge).Clone();
 alteredChallenge[alteredChallenge.Length - 1] = (byte)'Z';
 Check(!RelayAuth.TryReadChallenge(alteredChallenge, out _), "malformed challenge rejected");
 DeckChecks.Run(roomId, guestOne, guestTwo);
+DisplayChecks.Run(roomId);
 Console.WriteLine($"PASS: snapshot, claim/deck authority and protocols, and lobby-auth checks; snapshot {packet.Length} bytes.");
 if (args.Length == 1)
 {

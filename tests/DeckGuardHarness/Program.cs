@@ -59,8 +59,8 @@ internal static class Program
         var panel = new UI.UILibrarianEquipDeckPanel { _unitdata = unit };
         var slot = new UI.UIInvenEquipPageSlot { _bookDataModel = unit.bookItem };
         UI.UIController.Instance.CurrentUnit = unit;
-        Check(!(bool)Invoke("UiUnitFieldPrefix", list), "UI currentunit bypassed non-owner lock.");
-        Check(!(bool)Invoke("UiUnitFieldPrefix", panel), "UI _unitdata bypassed non-owner lock.");
+        Check(!(bool)Invoke("UiUnitFieldPrefix", list, null, new object[0]), "UI currentunit bypassed non-owner lock.");
+        Check(!(bool)Invoke("UiUnitFieldPrefix", panel, null, new object[0]), "UI _unitdata bypassed non-owner lock.");
         Check(!(bool)Invoke("UiBookFieldPrefix", slot), "UI inherited book field bypassed lock.");
         Check(!(bool)Invoke("UiCurrentUnitPrefix"), "UI current unit bypassed lock.");
         Check(!(bool)Invoke("UiEquipBookPrefix", slot), "UI book equipment bypassed lock.");
@@ -72,6 +72,24 @@ internal static class Program
         Check((bool)Invoke("UnitVoidPrefix", unit), "Owner cannot edit unit.");
         Check((bool)Invoke("BookVoidPrefix", unit.bookItem), "Owner cannot edit book.");
         Check((bool)Invoke("DeckVoidPrefix", deck), "Owner cannot edit deck.");
+        NativeDeckModels.IsConstructingMirrors = true;
+        Check(!(bool)Invoke("UnitVoidPrefix", unit) && !(bool)Invoke("BookVoidPrefix", unit.bookItem) &&
+            !(bool)Invoke("DeckVoidPrefix", deck), "Host display construction ran vanilla default equipment/deck mutations.");
+        Check(!DeckGuard.RunAuthorized(() => (bool)Invoke("UnitVoidPrefix", unit)), "Host authorization bypassed display construction isolation.");
+        NativeDeckModels.IsConstructingMirrors = false;
+        NativeDeckModels.MirrorUnit = unit;
+        NativeDeckModels.MirrorBook = unit.bookItem;
+        NativeDeckModels.MirrorDeck = deck;
+        Check(!(bool)Invoke("UnitVoidPrefix", unit), "Host mirror unit was treated as a real editable unit.");
+        Check(!(bool)Invoke("BookVoidPrefix", unit.bookItem), "Host mirror book was treated as a real editable book.");
+        Check(!(bool)Invoke("DeckVoidPrefix", deck), "Host mirror deck was treated as a real editable deck.");
+        Check(!DeckGuard.RunAuthorized(() => (bool)Invoke("DeckVoidPrefix", deck)), "Host authorization escaped into a display mirror.");
+        NativeDeckEditor.ConsumeClick = true;
+        Check(!(bool)Invoke("UiUnitFieldPrefix", list, null, new object[0]), "Routed native card click also ran vanilla mutation.");
+        NativeDeckEditor.ConsumeClick = false;
+        NativeDeckModels.MirrorUnit = null;
+        NativeDeckModels.MirrorBook = null;
+        NativeDeckModels.MirrorDeck = null;
         DeckGuard.Session.PreparationFrozen = true;
         Check(!(bool)Invoke("UnitVoidPrefix", unit), "Frozen preparation still editable.");
 
