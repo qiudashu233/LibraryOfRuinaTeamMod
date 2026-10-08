@@ -61,7 +61,7 @@ namespace RuinaCoop
         internal UnityEngine.Color skinColor = new UnityEngine.Color(1, 1, 1);
     }
 
-    internal sealed class PassiveXmlInfo { internal LorId id; }
+    internal sealed class PassiveXmlInfo { internal LorId id; internal bool isNegative; internal byte rare; }
     internal sealed class BookPassiveInfo { internal PassiveXmlInfo passive; }
     internal sealed class PassiveModel
     {
@@ -70,8 +70,30 @@ namespace RuinaCoop
             internal PassiveXmlInfo currentpassive;
             internal int receivepassivebookId = -1, givePassiveBookId = -1;
         }
-        internal PassiveModelSavedData originData = new PassiveModelSavedData();
-        internal PassiveModelSavedData reservedData = new PassiveModelSavedData();
+        internal PassiveModelSavedData originData;
+        internal PassiveModelSavedData reservedData;
+        // Match the real game's lazy reserve lifecycle, including save-loader ctor.
+        internal PassiveModel() { }
+        internal PassiveModel(int instance) { }
+        internal PassiveModel(LorId id, int instance, int slot)
+        {
+            originData = new PassiveModelSavedData
+            {
+                currentpassive = new PassiveXmlInfo { id = slot == 0 ? id : new LorId { id = 9999999 } },
+                receivepassivebookId = instance, givePassiveBookId = instance
+            };
+        }
+        internal void InitReservedData()
+        {
+            var xml = originData.currentpassive;
+            reservedData = new PassiveModelSavedData
+            {
+                currentpassive = xml == null ? null : new PassiveXmlInfo
+                { id = new LorId { id = xml.id.id, packageId = xml.id.packageId }, isNegative = xml.isNegative, rare = xml.rare },
+                receivepassivebookId = originData.receivepassivebookId,
+                givePassiveBookId = originData.givePassiveBookId
+            };
+        }
     }
 
     internal sealed class UnitDataModel
@@ -122,7 +144,7 @@ namespace RuinaCoop
         internal sealed class BookEquipedBookSavedData
         {
             internal int equipedPassiveBookInstanceId = -1;
-            internal readonly List<int> equipedBookIdListInPassive = new List<int>();
+            internal List<int> equipedBookIdListInPassive = new List<int>();
         }
         internal BookEquipedBookSavedData originData = new BookEquipedBookSavedData();
         internal BookEquipedBookSavedData reservedData = new BookEquipedBookSavedData();

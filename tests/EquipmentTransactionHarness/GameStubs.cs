@@ -105,20 +105,30 @@ public sealed class BookModel
     public bool CanEquipBookByGivePassive() { return originData.equipedPassiveBookInstanceId == -1; }
     internal void ChangeDeck(int index) { if (IsMultiDeck()) _deck = _deckList[index]; }
 }
-public sealed class PassiveXmlInfo { public LorId id; internal PassiveXmlInfo(int value) { id = new LorId(value); } }
+public enum Rarity { None, Common, Rare }
+public sealed class PassiveXmlInfo
+{
+    public LorId id;
+    public bool isNegative;
+    public Rarity rare;
+    internal PassiveXmlInfo(int value) { id = new LorId(value); }
+}
 public sealed class PassiveModel
 {
     public sealed class PassiveModelSavedData
     {
         public PassiveXmlInfo currentpassive;
-        public int receivepassivebookId;
-        public int givePassiveBookId;
+        public int receivepassivebookId = -1;
+        public int givePassiveBookId = -1;
     }
     public PassiveXmlInfo originpassive;
-    public PassiveModelSavedData originData = new PassiveModelSavedData();
-    public PassiveModelSavedData reservedData = new PassiveModelSavedData();
+    public PassiveModelSavedData originData;
+    public PassiveModelSavedData reservedData;
     private int _bookInstanceId;
-    internal PassiveModel(int id, PassiveXmlInfo xml) { _bookInstanceId = id; originpassive = xml; originData.currentpassive = xml; reservedData.currentpassive = xml; }
+    // The real native constructor/load initializes origin only. Its reserved
+    // buffer remains null until the passive succession popup initializes it.
+    internal PassiveModel(int id, PassiveXmlInfo xml)
+    { _bookInstanceId = id; originpassive = xml; originData = new PassiveModelSavedData { currentpassive = xml, receivepassivebookId = id, givePassiveBookId = id }; }
 }
 public sealed class UnitDataModel
 {

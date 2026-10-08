@@ -83,6 +83,8 @@ try {
         @('BookXmlInfo', 'canNotEquip', 'System.Boolean'),
         @('BookXmlInfo', 'optionList', 'System.Collections.Generic.List`1<BookOption>'),
         @('PlayHistoryModel', 'Start_TheBlueReverberationPrimaryBattle', 'System.Int32')
+        @('PassiveXmlInfo', 'isNegative', 'System.Boolean'),
+        @('PassiveXmlInfo', 'rare', 'Rarity')
     )
     foreach ($target in $equipmentFields) { $null = Assert-EquipmentField $target[0] $target[1] $target[2] }
 
@@ -126,6 +128,41 @@ try {
         @('LOR_DiceSystem.DiceCardXmlInfo', 'get_id', 'LorId', @())
     )
     foreach ($target in $equipmentMethods) { $null = Get-EquipmentMethod $target[0] $target[1] $target[2] $target[3] }
+    $canEquip = Get-EquipmentMethod 'BookModel' 'CanEquipBookByGivePassive' 'System.Boolean'
+    $canEquipFields = @($canEquip.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldfld' })
+    Assert-Equipment ($canEquipFields.Count -eq 2 -and $canEquipFields[0].Operand.Name -eq 'originData' -and
+        $canEquipFields[1].Operand.Name -eq 'equipedPassiveBookInstanceId') 'CanEquipBookByGivePassive reads only committed book donor state, never passive reserved buffers'
+    Assert-Equipment (@($canEquip.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldc.i4.m1' }).Count -eq 1 -and
+        @($canEquip.Body.Instructions | Where-Object { $_.OpCode.Name -like 'bne.un*' }).Count -eq 1 -and
+        @($canEquip.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldc.i4.1' }).Count -eq 1) 'CanEquipBookByGivePassive accepts committed donor id -1'
+
+    # Field signatures alone cannot establish lifecycle. Native creation/loading
+    # leaves passive reservedData null; only the succession UI creates that buffer.
+    foreach ($target in @(
+        @('PassiveModel', '.ctor', 'System.Void', @('LorId', 'System.Int32', 'System.Int32')),
+        @('PassiveModel', 'LoadFromSaveData', 'System.Void', @('GameSave.SaveData'))
+    )) {
+        $method = Get-EquipmentMethod $target[0] $target[1] $target[2] $target[3]
+        $body = $method.Body.Instructions
+        Assert-Equipment (@($body | Where-Object { $_.OpCode.Name -eq 'stfld' -and $_.Operand.Name -eq 'originData' }).Count -eq 1) "$($target[1]) initializes passive originData"
+        Assert-Equipment (@($body | Where-Object { $_.OpCode.Name -eq 'stfld' -and $_.Operand.Name -eq 'reservedData' }).Count -eq 0) "$($target[1]) leaves passive reservedData uninitialized"
+        Assert-Equipment (@($body | Where-Object { $_.OpCode.Name -in @('call', 'callvirt') -and $_.Operand.Name -eq 'InitReservedData' }).Count -eq 0) "$($target[1]) does not implicitly initialize a passive draft"
+    }
+    $bookCtor = Get-EquipmentMethod 'BookModel' '.ctor' 'System.Void' @('BookXmlInfo')
+    foreach ($name in @('originData', 'reservedData')) {
+        Assert-Equipment (@($bookCtor.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'stfld' -and $_.Operand.Name -eq $name }).Count -eq 1) "Book constructor allocates its default empty $name object"
+    }
+    $bookLoad = Get-EquipmentMethod 'BookModel' 'LoadFromSaveDataExceptId' 'System.Void' @('GameSave.SaveData')
+    Assert-Equipment (@($bookLoad.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'stfld' -and $_.Operand.Name -eq 'reservedData' -or
+        $_.OpCode.Name -in @('call', 'callvirt') -and $_.Operand.Name -in @('InitReservedData', 'InitReservedDataForPassiveSuccession') }).Count -eq 0) 'Book loading keeps the constructor-empty reserved object instead of copying committed inheritance'
+    $popupInit = Get-EquipmentMethod 'UI.UIPassiveSuccessionPopup' 'InitReservedData' 'System.Void'
+    $bookInitCall = @($popupInit.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'callvirt' -and $_.Operand.Name -eq 'InitReservedDataForPassiveSuccession' })
+    $passiveInitCall = @($popupInit.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'callvirt' -and $_.Operand.Name -eq 'InitReservedData' })
+    Assert-Equipment ($bookInitCall.Count -eq 1 -and $passiveInitCall.Count -eq 1 -and $bookInitCall[0].Offset -lt $passiveInitCall[0].Offset) 'Succession popup explicitly initializes book then passive reserved buffers'
+    $changed = Get-EquipmentMethod 'PassiveModel' 'IsChangedReserved' 'System.Boolean'
+    foreach ($name in @('currentpassive', 'receivepassivebookId', 'givePassiveBookId', 'isNegative', 'rare')) {
+        Assert-Equipment (@($changed.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldfld' -and $_.Operand.Name -eq $name }).Count -ge 2) "Native passive draft comparison reads $name from both states"
+    }
 
     $equip = Get-EquipmentMethod 'UnitDataModel' 'EquipBook' 'System.Boolean' @('BookModel', 'System.Boolean', 'System.Boolean')
     $instructions = $equip.Body.Instructions

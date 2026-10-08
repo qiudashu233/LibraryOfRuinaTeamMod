@@ -227,6 +227,15 @@ namespace RuinaCoop
     // Every required target is validated against the supported game at install.
     internal static class NativeUi
     {
+        // A destroyed Unity component can retain a non-null managed wrapper.
+        // Restoration must not invoke its native-backed properties or methods.
+        internal static bool IsAlive(object target)
+        {
+            if (ReferenceEquals(target, null)) return false;
+            var unityObject = target as UnityEngine.Object;
+            return ReferenceEquals(unityObject, null) || unityObject != null;
+        }
+
         internal static object Get(object target, string name)
         {
             if (target == null) return null;

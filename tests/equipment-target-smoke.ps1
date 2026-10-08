@@ -246,6 +246,34 @@ foreach ($methodName in @('TryOpen', 'Refresh', 'Close')) {
     $calls = @([RuinaNativeIl]::Read($method) | Where-Object { $_.Operand -eq $advance })
     Assert-Equipment ($calls.Count -ge 1) "Rendered callbacks retired on $methodName"
 }
+$uiType = $GuardSmokeModAssembly.GetType('RuinaCoop.NativeUi', $true)
+$alive = $uiType.GetMethod('IsAlive', $equipmentFlags)
+Assert-Equipment ($null -ne $alive -and $alive.IsStatic -and $alive.ReturnType -eq [bool]) 'Shared Unity-object liveness contract exists'
+Assert-Equipment (-not $alive.Invoke($null, [object[]]@($null))) 'Null UI target cannot be restored'
+Assert-Equipment ($alive.Invoke($null, [object[]]@((New-Object object)))) 'Ordinary managed restoration target remains alive'
+$aliveCalls = @([RuinaNativeIl]::Read($alive) | Where-Object {
+    $_.Operand -is [Reflection.MethodBase] -and $_.Operand.DeclaringType.FullName -eq 'UnityEngine.Object' -and
+    $_.Operand.Name -in @('op_Equality', 'op_Inequality')
+})
+Assert-Equipment ($aliveCalls.Count -ge 1) 'Destroyed Unity wrappers use overloaded equality instead of CLR null only'
+# A managed-only MonoBehaviour wrapper has no cached native pointer. Its Unity
+# null comparison returns false without invoking constructors or native calls.
+$retiredSelectable = [Runtime.Serialization.FormatterServices]::GetUninitializedObject((Resolve-EquipmentType 'UI.UICustomSelectable'))
+Assert-Equipment (-not [object]::ReferenceEquals($retiredSelectable, $null) -and
+    -not $alive.Invoke($null, [object[]]@($retiredSelectable))) 'CLR-nonnull retired UI component is rejected before its property setter'
+$close = $equipmentEditor.GetMethod('Close', $equipmentFlags)
+$closeIl = [RuinaNativeIl]::Read($close)
+$livenessChecks = @($closeIl | Where-Object { $_.Operand -eq $alive })
+Assert-Equipment ($livenessChecks.Count -ge 3) 'Equipment Close guards visibility, selectable and text/canvas restoration'
+foreach ($call in $livenessChecks) {
+    $index = [Array]::IndexOf($closeIl, $call)
+    Assert-Equipment ($closeIl[$index + 1].Opcode -match '^brfalse') 'Destroyed UI target branches past restoration'
+}
+$managedRestore = @($closeIl | Where-Object {
+    $_.Operand -is [Reflection.MethodBase] -and $_.Operand.Name -eq 'SetValue' -and
+    $_.Operand.DeclaringType -eq [Reflection.FieldInfo]
+})[0]
+Assert-Equipment ($managedRestore.Offset -lt $livenessChecks[0].Offset) 'Managed field/list restoration still occurs before skipping destroyed UI controls'
 $route = $equipmentEditor.GetMethod('TryHandleCorePageClick', $equipmentFlags)
 $routeCalls = @([RuinaNativeIl]::Read($route) | Where-Object { $_.Opcode -eq 'call' -or $_.Opcode -eq 'callvirt' })
 Assert-Equipment (@($routeCalls | Where-Object { $_.Operand -eq $request }).Count -eq 1) 'Inventory click has one core-request send path'

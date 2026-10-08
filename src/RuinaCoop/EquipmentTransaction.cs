@@ -35,7 +35,7 @@ namespace RuinaCoop
             if (ReferenceEquals(target, inventory.GetBlackSilenceBook()))
                 return Reject("Special key pages are not supported yet.", out reason);
             if (target.owner != null) return Reject("This key page is already equipped.", out reason);
-            if (!target.CanEquipBookByGivePassive() || IsPassiveDonor(target) || HasPassiveDraft(target))
+            if (IsPassiveDonor(target) || HasPassiveDraft(target) || !target.CanEquipBookByGivePassive())
                 return Reject("This key page is a passive donor or has an unfinished passive draft.", out reason);
             return true;
         }
@@ -97,14 +97,31 @@ namespace RuinaCoop
 
         internal static bool HasPassiveDraft(BookModel book)
         {
-            if (book == null || !SavedDataEquals(Required(typeof(BookModel), "originData").GetValue(book),
-                Required(typeof(BookModel), "reservedData").GetValue(book))) return true;
+            if (book == null) return true;
+            var original = Required(typeof(BookModel), "originData").GetValue(book);
+            var pending = Required(typeof(BookModel), "reservedData").GetValue(book);
+            if (original == null || pending == null) return true;
+            var originalSources = Required(original.GetType(), "equipedBookIdListInPassive").GetValue(original) as List<int>;
+            var pendingSources = Required(pending.GetType(), "equipedBookIdListInPassive").GetValue(pending) as List<int>;
+            if (originalSources == null || pendingSources == null) return true;
+            // Book constructors allocate an empty reserved object, but loading
+            // only fills origin. Passive reserved buffers are created when the
+            // vanilla succession popup opens; null is the ordinary loaded state.
+            var compareBook = pendingSources.Count != 0 ||
+                (int)Required(pending.GetType(), "equipedPassiveBookInstanceId").GetValue(pending) != -1;
             var passives = Required(typeof(BookModel), "_activatedAllPassives").GetValue(book) as List<PassiveModel>;
             if (passives == null) return true;
             foreach (var passive in passives)
-                if (passive == null || !SavedDataEquals(Required(typeof(PassiveModel), "originData").GetValue(passive),
-                    Required(typeof(PassiveModel), "reservedData").GetValue(passive))) return true;
-            return false;
+            {
+                if (passive == null) return true;
+                var originalPassive = Required(typeof(PassiveModel), "originData").GetValue(passive);
+                var pendingPassive = Required(typeof(PassiveModel), "reservedData").GetValue(passive);
+                if (originalPassive == null) return true;
+                if (pendingPassive == null) continue;
+                compareBook = true;
+                if (!SavedDataEquals(originalPassive, pendingPassive)) return true;
+            }
+            return compareBook && !SavedDataEquals(original, pending);
         }
 
         private static bool SavedDataEquals(object left, object right)
@@ -125,7 +142,8 @@ namespace RuinaCoop
                     // Removed native passive slots can retain null on both sides.
                     if (ReferenceEquals(a, b)) continue;
                     var passiveA = a as PassiveXmlInfo; var passiveB = b as PassiveXmlInfo;
-                    if (passiveA == null || passiveB == null || passiveA.id != passiveB.id) return false;
+                    if (passiveA == null || passiveB == null || passiveA.id != passiveB.id ||
+                        passiveA.isNegative != passiveB.isNegative || passiveA.rare != passiveB.rare) return false;
                 }
                 else if (!Equals(a, b)) return false;
             }

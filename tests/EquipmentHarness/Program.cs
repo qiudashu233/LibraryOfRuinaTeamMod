@@ -227,6 +227,36 @@ internal static class Program
         Check(!binding.TryRebindCorePage(Room, changed, 100), "core rebind cannot recover lost ownership");
     }
 
+    private static void UiReasons()
+    {
+        var snapshot = Snapshot(); var target = snapshot.CoreBooks[2];
+        Check(CorePageUiAccess.ReadOnlyReason(snapshot, 0, target, Owner, true, true, false, true) == null,
+            "owned available target is rendered enabled independently of the dirty click guard");
+        Check(CorePageUiAccess.ReadOnlyReason(snapshot, 0, target, Owner, true, true, true, true) == "等待房主确认",
+            "pending labels the actual wait instead of generic readonly");
+        Check(CorePageUiAccess.ReadOnlyReason(snapshot, 0, target, Owner, true, false, false, true) == "联机尚未就绪",
+            "not-ready reason is distinct from inventory flags");
+        snapshot.ClaimOwners[0] = 0;
+        Check(CorePageUiAccess.ReadOnlyReason(snapshot, 0, target, Owner, false, true, false, true) == "馆员尚未认领",
+            "unclaimed role explains why claiming is required");
+        snapshot.ClaimOwners[0] = Other;
+        Check(CorePageUiAccess.ReadOnlyReason(snapshot, 0, target, Owner, false, true, false, true) == "其他玩家的馆员",
+            "foreign role remains readonly with accurate reason");
+        snapshot.ClaimOwners[0] = Owner;
+        target.Flags = CoreBookFlags.PassiveBound;
+        Check(CorePageUiAccess.ReadOnlyReason(snapshot, 0, target, Owner, true, true, false, true) == "被动来源被占用",
+            "claiming cannot erase a passive donor restriction");
+        target.Flags = CoreBookFlags.DraftMismatch;
+        Check(CorePageUiAccess.ReadOnlyReason(snapshot, 0, target, Owner, true, true, false, true) == "被动草稿未应用",
+            "draft flag is visible rather than all books appearing generically readonly");
+        target.Flags = CoreBookFlags.None; snapshot.CoreBooks[0].Flags |= CoreBookFlags.DraftMismatch;
+        Check(CorePageUiAccess.ReadOnlyReason(snapshot, 0, target, Owner, true, true, false, true) == "当前书页：被动草稿未应用",
+            "current page restriction also prevents rendering an unusable target enabled");
+        snapshot.CoreBooks[0].Flags = CoreBookFlags.Equipped;
+        Check(CorePageUiAccess.ReadOnlyReason(snapshot, 0, target, Owner, true, true, false, false) == "界面绑定已失效",
+            "missing row binding has a separate failure reason");
+    }
+
     public static void Main()
-    { Protocol(); Authority(); Lifecycle(); _checks += EquipmentCodecChecks.Run(); Console.WriteLine("EquipmentHarness: " + _checks + " checks passed."); }
+    { Protocol(); Authority(); Lifecycle(); UiReasons(); _checks += EquipmentCodecChecks.Run(); Console.WriteLine("EquipmentHarness: " + _checks + " checks passed."); }
 }

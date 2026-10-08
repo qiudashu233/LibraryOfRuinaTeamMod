@@ -72,6 +72,63 @@ namespace RuinaCoop
         }
     }
 
+    internal static class CorePageUiAccess
+    {
+        // Rendering uses current ownership/readiness, while click submission also
+        // requires the unchanged press token and the editor's dirty-state guard.
+        internal static string ReadOnlyReason(ProgressSnapshot snapshot, byte unitIndex,
+            ProgressSnapshot.CoreBookEntry entry, ulong sender, bool canEdit, bool ready, bool pending, bool bound)
+        {
+            if (!bound || snapshot == null || entry == null || unitIndex >= snapshot.UnitDecks.Count ||
+                unitIndex >= snapshot.ClaimOwners.Count) return "界面绑定已失效";
+            if (snapshot.ClaimOwners[unitIndex] == 0) return "馆员尚未认领";
+            if (snapshot.ClaimOwners[unitIndex] != sender) return "其他玩家的馆员";
+            if (snapshot.DecksFrozen) return "战斗准备已锁定";
+            var deck = snapshot.UnitDecks[unitIndex];
+            if (deck.Fixed) return "当前是固定牌组";
+            if (deck.MultiDeck) return "当前是多牌组";
+            if (!canEdit) return "馆员当前不可编辑";
+            if (!ready) return "联机尚未就绪";
+            if (pending) return "等待房主确认";
+            if ((entry.Flags & CoreBookFlags.Equipped) != 0) return "该书页已装备";
+            if (entry.Kind == CoreBookKind.Default) return "默认书页不可选";
+            if (entry.Kind == CoreBookKind.Special) return "特殊书页只读";
+            var targetReason = FlagReason(entry.Flags);
+            if (targetReason != null) return targetReason;
+            var result = EquipmentAuthority.Validate(snapshot, sender, new CorePageRequest
+            {
+                RequestId = 1, StageId = snapshot.SelectedStageId, FloorId = snapshot.SelectedFloorId,
+                UnitIndex = unitIndex, UnitIdentity = deck.UnitIdentity, OldBookToken = deck.BookToken,
+                TargetBookToken = entry.BookToken, ClaimRevision = snapshot.ClaimRevision, DeckRevision = snapshot.DeckRevision
+            });
+            if (result == CorePageResultCode.Accepted) return null;
+            if (result == CorePageResultCode.UnsupportedInventory) return "房主库存暂不可用";
+            if (result == CorePageResultCode.UnsupportedCurrentBook)
+            {
+                var current = snapshot.CoreBooks.Find(book => book.BookToken == deck.BookToken);
+                var reason = current == null ? null : FlagReason(current.Flags & ~CoreBookFlags.Equipped);
+                return reason == null ? "当前书页不支持更换" : "当前书页：" + reason;
+            }
+            return "书页状态已失效";
+        }
+
+        private static string FlagReason(CoreBookFlags flags)
+        {
+            if ((flags & CoreBookFlags.OwnerMismatch) != 0) return "书页归属不一致";
+            if ((flags & CoreBookFlags.PassiveBound) != 0) return "被动来源被占用";
+            if ((flags & CoreBookFlags.DraftMismatch) != 0) return "被动草稿未应用";
+            if ((flags & CoreBookFlags.Locked) != 0) return "书页被锁定";
+            if ((flags & CoreBookFlags.FixedDeck) != 0) return "固定牌组只读";
+            if ((flags & CoreBookFlags.MultiDeck) != 0) return "多牌组只读";
+            if ((flags & CoreBookFlags.UnsupportedId) != 0) return "非原版核心书页";
+            if ((flags & CoreBookFlags.InvalidInstance) != 0) return "书页实例不支持";
+            if ((flags & CoreBookFlags.UnsupportedCards) != 0) return "含不支持的战斗页";
+            if ((flags & CoreBookFlags.UnsupportedDisplay) != 0) return "书页属性暂不同步";
+            if ((flags & CoreBookFlags.CannotEquip) != 0) return "原版禁止装备";
+            return flags == CoreBookFlags.None ? null : "书页暂不支持";
+        }
+    }
+
 #if !EQUIPMENT_PURE_TESTS
     // The original page keeps its layout and lists, but never reads the local
     // BookInventory. Only host DTOs and detached, permanently guarded books enter it.
@@ -356,14 +413,16 @@ namespace RuinaCoop
             // Refresh visibility; the original press identity is checked separately.
             SetVisible(button, false);
             SlotBinding binding;
-            ProgressSnapshot.CoreBookEntry entry;
-            var enabled = book != null && Slots.TryGetValue(__instance, out binding) &&
-                ReferenceEquals(book, binding.Book) && Entries.TryGetValue(book, out entry) &&
-                NativeDeckEditor.CanEdit && NativeDeckEditor.Session.IsReadyForDeck && !NativeDeckEditor.Session.DeckRequestPending &&
-                entry.Kind == CoreBookKind.Ordinary && entry.Flags == CoreBookFlags.None;
+            ProgressSnapshot.CoreBookEntry entry = null;
+            var bound = book != null && Slots.TryGetValue(__instance, out binding) &&
+                ReferenceEquals(book, binding.Book) && Entries.TryGetValue(book, out entry);
+            var reason = CorePageUiAccess.ReadOnlyReason(NativeDeckEditor.Snapshot, NativeDeckEditor.UnitIndex, entry,
+                SteamClient.SteamId.Value, NativeDeckEditor.CanEdit, NativeDeckEditor.Session.IsReadyForDeck,
+                NativeDeckEditor.Session.DeckRequestPending, bound);
+            var enabled = reason == null;
             SetVisible(button, true);
             SetInteractable(button, enabled);
-            SetProperty(NativeUi.Get(__instance, "txt_equipButton"), "text", NativeDeckEditor.Session.DeckRequestPending ? "等待房主确认" : enabled ? "更换核心书页" : "只读");
+            SetProperty(NativeUi.Get(__instance, "txt_equipButton"), "text", enabled ? "更换核心书页" : reason);
             return false;
         }
 
@@ -514,10 +573,13 @@ namespace RuinaCoop
                 }
                 catch (Exception exception) { Debug.LogError("[RuinaCoop] Equipment UI field restoration failed: " + exception); }
             }
-            foreach (var pair in Visibility) if (pair.Key != null) pair.Key.SetActive(pair.Value);
-            foreach (var pair in Interactable) try { NativeUi.Set(pair.Key, "interactable", pair.Value); } catch (Exception exception) { Debug.LogError(exception); }
-            foreach (var pair in Properties) foreach (var property in pair.Value)
-                try { NativeUi.Set(pair.Key, property.Key, property.Value); } catch (Exception exception) { Debug.LogError(exception); }
+            foreach (var pair in Visibility) if (NativeUi.IsAlive(pair.Key)) pair.Key.SetActive(pair.Value);
+            foreach (var pair in Interactable)
+                if (NativeUi.IsAlive(pair.Key))
+                    try { NativeUi.Set(pair.Key, "interactable", pair.Value); } catch (Exception exception) { Debug.LogError(exception); }
+            foreach (var pair in Properties)
+                if (NativeUi.IsAlive(pair.Key)) foreach (var property in pair.Value)
+                    try { NativeUi.Set(pair.Key, property.Key, property.Value); } catch (Exception exception) { Debug.LogError(exception); }
             Saved.Clear(); Captured.Clear(); Visibility.Clear(); Interactable.Clear(); Properties.Clear(); _panel = null; _refreshing = false;
         }
 

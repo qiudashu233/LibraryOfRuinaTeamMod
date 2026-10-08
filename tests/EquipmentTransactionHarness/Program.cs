@@ -36,10 +36,10 @@ internal static class Program
             {
                 var model = _models[i];
                 _passiveOrigins[i] = model.originData; _passiveReserved[i] = model.reservedData;
-                _natural[i] = model.originpassive; _currentOrigin[i] = model.originData.currentpassive; _currentReserved[i] = model.reservedData.currentpassive;
+                _natural[i] = model.originpassive; _currentOrigin[i] = model.originData.currentpassive; _currentReserved[i] = model.reservedData == null ? null : model.reservedData.currentpassive;
                 _instanceIds[i] = (int)Get(model, "_bookInstanceId");
-                _giveOrigins[i] = model.originData.givePassiveBookId; _giveReserved[i] = model.reservedData.givePassiveBookId;
-                _receiveOrigins[i] = model.originData.receivepassivebookId; _receiveReserved[i] = model.reservedData.receivepassivebookId;
+                _giveOrigins[i] = model.originData.givePassiveBookId; _giveReserved[i] = model.reservedData == null ? -1 : model.reservedData.givePassiveBookId;
+                _receiveOrigins[i] = model.originData.receivepassivebookId; _receiveReserved[i] = model.reservedData == null ? -1 : model.reservedData.receivepassivebookId;
             }
         }
         internal void CheckUnchanged()
@@ -55,10 +55,11 @@ internal static class Program
                 var model = _models[i];
                 Check(ReferenceEquals(active[i], model), "active passive identity/order restored");
                 Check(ReferenceEquals(model.originData, _passiveOrigins[i]) && ReferenceEquals(model.reservedData, _passiveReserved[i]), "passive origin/reserved references restored");
-                Check(ReferenceEquals(model.originpassive, _natural[i]) && ReferenceEquals(model.originData.currentpassive, _currentOrigin[i]) && ReferenceEquals(model.reservedData.currentpassive, _currentReserved[i]), "passive XML references restored");
+                Check(ReferenceEquals(model.originpassive, _natural[i]) && ReferenceEquals(model.originData.currentpassive, _currentOrigin[i]) &&
+                    (model.reservedData == null || ReferenceEquals(model.reservedData.currentpassive, _currentReserved[i])), "passive XML references restored");
                 Check((int)Get(model, "_bookInstanceId") == _instanceIds[i], "passive owning instance restored");
-                Check(model.originData.givePassiveBookId == _giveOrigins[i] && model.reservedData.givePassiveBookId == _giveReserved[i] &&
-                    model.originData.receivepassivebookId == _receiveOrigins[i] && model.reservedData.receivepassivebookId == _receiveReserved[i], "passive source/recipient ids restored");
+                Check(model.originData.givePassiveBookId == _giveOrigins[i] && model.originData.receivepassivebookId == _receiveOrigins[i] &&
+                    (model.reservedData == null || model.reservedData.givePassiveBookId == _giveReserved[i] && model.reservedData.receivepassivebookId == _receiveReserved[i]), "passive source/recipient ids restored");
             }
         }
         private static void CheckSequence(List<int> actual, int[] expected)
@@ -161,6 +162,10 @@ internal static class Program
         {
             string reason;
             var success = new Fixture();
+            var loadedPassive = ((List<PassiveModel>)Get(success.Target, "_activatedAllPassives"))[0];
+            Check(loadedPassive.reservedData == null && loadedPassive.originData.receivepassivebookId == success.Target.instanceId &&
+                loadedPassive.originData.givePassiveBookId == success.Target.instanceId, "native passive origin-only lifecycle matches game initialization");
+            Check(!EquipmentTransaction.HasPassiveDraft(success.Target) && EquipmentTransaction.CanUseTarget(success.Target, out reason), "loaded ordinary key page has no initialized passive draft");
             var published = false;
             Check(EquipmentTransaction.Equip(success.Unit, success.Target, () =>
             { published = true; Check(DeckGuard.Authorized, "publish inside authorization"); Check(success.Unit.appearanceType == Gender.N, "published neutral appearance"); return true; }, out reason) == EquipmentTransactionResult.Accepted,
@@ -209,11 +214,34 @@ internal static class Program
             {
                 var receiver = new Fixture();
                 var source = AddCommittedReceiver(receiver, currentReceiver ? receiver.Old : receiver.Target);
+                var receiverBook = currentReceiver ? receiver.Old : receiver.Target;
+                Check(receiverBook.originData.equipedBookIdListInPassive.Count == 1 && receiverBook.reservedData.equipedBookIdListInPassive.Count == 0 &&
+                    ((List<PassiveModel>)Get(receiverBook, "_activatedAllPassives"))[0].reservedData == null && !EquipmentTransaction.HasPassiveDraft(receiverBook), "loaded receiver ignores only its uninitialized default empty book buffer");
                 Check(EquipmentTransaction.CanEquip(receiver.Unit, receiver.Target, out reason), "committed receiver can change equipment");
                 Check(EquipmentTransaction.Equip(receiver.Unit, receiver.Target, () => true, out reason) == EquipmentTransactionResult.Accepted, "committed receiver equipment transaction accepted");
                 foreach (var saved in receiver.PassiveStates) saved.CheckUnchanged();
                 Check(source.owner == null && source.originData.equipedPassiveBookInstanceId == (currentReceiver ? receiver.Old.instanceId : receiver.Target.instanceId), "committed passive donor stays reserved for original recipient");
             }
+            var initialized = new Fixture();
+            InitDraft(initialized.Target);
+            Check(!EquipmentTransaction.HasPassiveDraft(initialized.Target) &&
+                EquipmentTransaction.Equip(initialized.Unit, initialized.Target, () => true, out reason) == EquipmentTransactionResult.Accepted,
+                "initialized matching passive buffer does not prevent equipment");
+            var initializedRollback = new Fixture();
+            InitDraft(initializedRollback.Target);
+            initializedRollback.PassiveStates.Clear();
+            foreach (var book in new[] { initializedRollback.Old, initializedRollback.Target, initializedRollback.Appearance, initializedRollback.Default }) initializedRollback.PassiveStates.Add(new PassiveCapture(book));
+            Check(EquipmentTransaction.Equip(initializedRollback.Unit, initializedRollback.Target, () => { CorruptPassives(initializedRollback.Target); return false; }, out reason) == EquipmentTransactionResult.Failed,
+                "initialized reserved objects roll back after failed publishing");
+            initializedRollback.Restored();
+            var removeSourcesDraft = new Fixture();
+            AddCommittedReceiver(removeSourcesDraft, removeSourcesDraft.Target);
+            InitDraft(removeSourcesDraft.Target);
+            removeSourcesDraft.Target.reservedData.equipedBookIdListInPassive.Clear();
+            var removeCalls = 0; removeSourcesDraft.Unit.Hook = (stage, unit, target) => removeCalls++;
+            Check(EquipmentTransaction.HasPassiveDraft(removeSourcesDraft.Target) &&
+                EquipmentTransaction.Equip(removeSourcesDraft.Unit, removeSourcesDraft.Target, null, out reason) == EquipmentTransactionResult.Rejected && removeCalls == 0,
+                "initialized removal of all passive sources is still a genuine empty-book draft");
             var passiveRollback = new Fixture();
             var donor = AddCommittedReceiver(passiveRollback, passiveRollback.Target);
             var donorDeck = donor.GetDeckAll_nocopy()[0];
@@ -238,13 +266,13 @@ internal static class Program
             var repeatedLink = new Fixture();
             var repeatedDonor = AddCommittedReceiver(repeatedLink, repeatedLink.Target);
             repeatedLink.Target.originData.equipedBookIdListInPassive.Add(repeatedDonor.instanceId);
-            repeatedLink.Target.reservedData.equipedBookIdListInPassive.Add(repeatedDonor.instanceId);
             repeatedLink.PassiveStates.Clear();
             foreach (var book in new[] { repeatedLink.Old, repeatedLink.Target, repeatedLink.Appearance, repeatedLink.Default, repeatedDonor }) repeatedLink.PassiveStates.Add(new PassiveCapture(book));
             Check(EquipmentTransaction.Equip(repeatedLink.Unit, repeatedLink.Target, () => { CorruptPassives(repeatedDonor); return false; }, out reason) == EquipmentTransactionResult.Failed, "repeated source references and reciprocal cycle are captured once without recursion failure");
             repeatedLink.Restored();
 
             var equalXml = new Fixture();
+            InitDraft(equalXml.Target);
             var equalModel = ((List<PassiveModel>)Get(equalXml.Target, "_activatedAllPassives"))[0];
             equalModel.reservedData.currentpassive = new PassiveXmlInfo(equalModel.originData.currentpassive.id.id);
             Check(!EquipmentTransaction.HasPassiveDraft(equalXml.Target) && EquipmentTransaction.CanEquip(equalXml.Unit, equalXml.Target, out reason), "XML clones with same LorId are committed metadata");
@@ -257,7 +285,7 @@ internal static class Program
                 var brokenGraph = new Fixture();
                 var graphSource = AddCommittedReceiver(brokenGraph, brokenGraph.Target);
                 if (duplicate) BookInventoryModel.Instance.Register(new BookModel(501, graphSource.instanceId));
-                else { brokenGraph.Target.originData.equipedBookIdListInPassive[0] = 777; brokenGraph.Target.reservedData.equipedBookIdListInPassive[0] = 777; }
+                else brokenGraph.Target.originData.equipedBookIdListInPassive[0] = 777;
                 var originalCore = brokenGraph.Unit.bookItem;
                 var vanillaCalls = 0; brokenGraph.Unit.Hook = (stage, unit, target) => vanillaCalls++;
                 Check(EquipmentTransaction.Equip(brokenGraph.Unit, brokenGraph.Target, null, out reason) == EquipmentTransactionResult.Failed && vanillaCalls == 0 &&
@@ -284,11 +312,18 @@ internal static class Program
                 f => BookInventoryModel.Instance.Black = f.Target,
                 f => f.Target.originData.equipedPassiveBookInstanceId = 30,
                 f => f.Target.reservedData.equipedPassiveBookInstanceId = 30,
-                f => f.Target.originData.equipedBookIdListInPassive.Add(30),
+                f => { InitDraft(f.Target); f.Target.originData.equipedBookIdListInPassive.Add(30); },
                 f => f.Target.reservedData.equipedBookIdListInPassive.Add(30),
-                f => ((List<PassiveModel>)Get(f.Target, "_activatedAllPassives"))[0].reservedData.currentpassive = new PassiveXmlInfo(999),
-                f => ((List<PassiveModel>)Get(f.Target, "_activatedAllPassives"))[0].reservedData.receivepassivebookId = 99,
-                f => ((List<PassiveModel>)Get(f.Target, "_activatedAllPassives"))[0].reservedData.givePassiveBookId = 99,
+                f => { InitDraft(f.Target); ((List<PassiveModel>)Get(f.Target, "_activatedAllPassives"))[0].reservedData.currentpassive = new PassiveXmlInfo(999); },
+                f => { InitDraft(f.Target); ((List<PassiveModel>)Get(f.Target, "_activatedAllPassives"))[0].reservedData.receivepassivebookId = 99; },
+                f => { InitDraft(f.Target); ((List<PassiveModel>)Get(f.Target, "_activatedAllPassives"))[0].reservedData.givePassiveBookId = 99; },
+                f => { InitDraft(f.Target); var p = ((List<PassiveModel>)Get(f.Target, "_activatedAllPassives"))[0]; p.reservedData.currentpassive = new PassiveXmlInfo(p.originData.currentpassive.id.id) { isNegative = true }; },
+                f => { InitDraft(f.Target); var p = ((List<PassiveModel>)Get(f.Target, "_activatedAllPassives"))[0]; p.reservedData.currentpassive = new PassiveXmlInfo(p.originData.currentpassive.id.id) { rare = Rarity.Rare }; },
+                f => f.Target.originData = null,
+                f => f.Target.reservedData = null,
+                f => f.Target.originData.equipedBookIdListInPassive = null,
+                f => f.Target.reservedData.equipedBookIdListInPassive = null,
+                f => ((List<PassiveModel>)Get(f.Target, "_activatedAllPassives"))[0].originData = null,
                 f => NativeDeckModels.Mirror = f.Target,
                 f => NativeDeckModels.Mirror = f.Unit,
                 f => f.Old.Fixed = true,
@@ -320,24 +355,33 @@ internal static class Program
         ((List<PassiveModel>)Get(source, "_activatedAllPassives")).Add(new PassiveModel(source.instanceId, new PassiveXmlInfo(1500)));
         BookInventoryModel.Instance.Register(source);
         receiver.originData.equipedBookIdListInPassive.Add(source.instanceId);
-        receiver.reservedData.equipedBookIdListInPassive.Add(source.instanceId);
         source.originData.equipedPassiveBookInstanceId = receiver.instanceId;
-        source.reservedData.equipedPassiveBookInstanceId = receiver.instanceId;
         var inherited = ((List<PassiveModel>)Get(receiver, "_activatedAllPassives"))[0];
-        inherited.originData.currentpassive = new PassiveXmlInfo(1500); inherited.reservedData.currentpassive = inherited.originData.currentpassive;
-        inherited.originData.receivepassivebookId = source.instanceId; inherited.reservedData.receivepassivebookId = source.instanceId;
+        inherited.originData.currentpassive = new PassiveXmlInfo(1500);
+        inherited.originData.receivepassivebookId = source.instanceId;
         var donating = ((List<PassiveModel>)Get(source, "_activatedAllPassives"))[0];
-        donating.originData.givePassiveBookId = receiver.instanceId; donating.reservedData.givePassiveBookId = receiver.instanceId;
+        donating.originData.givePassiveBookId = receiver.instanceId;
         fixture.BookOrder = BookInventoryModel.Instance.GetBookList_equip();
         fixture.PassiveStates.Clear();
         foreach (var book in new[] { fixture.Old, fixture.Target, fixture.Appearance, fixture.Default, source }) fixture.PassiveStates.Add(new PassiveCapture(book));
         return source;
+    }
+    private static void InitDraft(BookModel book)
+    {
+        book.reservedData = new BookModel.BookEquipedBookSavedData
+        { equipedPassiveBookInstanceId = book.originData.equipedPassiveBookInstanceId,
+            equipedBookIdListInPassive = new List<int>(book.originData.equipedBookIdListInPassive) };
+        foreach (var model in (List<PassiveModel>)Get(book, "_activatedAllPassives"))
+            model.reservedData = new PassiveModel.PassiveModelSavedData
+            { currentpassive = model.originData.currentpassive, givePassiveBookId = model.originData.givePassiveBookId,
+                receivepassivebookId = model.originData.receivepassivebookId };
     }
     private static void CorruptPassives(BookModel book)
     {
         var active = (List<PassiveModel>)Get(book, "_activatedAllPassives");
         foreach (var model in active)
         {
+            if (model.reservedData == null) model.reservedData = new PassiveModel.PassiveModelSavedData();
             model.originpassive = new PassiveXmlInfo(666);
             model.originData.currentpassive = new PassiveXmlInfo(667); model.reservedData.currentpassive = new PassiveXmlInfo(668);
             model.originData.givePassiveBookId = 41; model.originData.receivepassivebookId = 42;

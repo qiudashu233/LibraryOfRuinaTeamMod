@@ -169,28 +169,38 @@ namespace RuinaCoop
         private static bool HasPassiveDraft(BookModel book)
         {
             var original = book.originData; var pending = book.reservedData;
-            if (original == null || pending == null ||
-                original.equipedPassiveBookInstanceId != pending.equipedPassiveBookInstanceId ||
-                original.equipedBookIdListInPassive == null || pending.equipedBookIdListInPassive == null ||
-                !original.equipedBookIdListInPassive.SequenceEqual(pending.equipedBookIdListInPassive)) return true;
+            if (original == null || pending == null || original.equipedBookIdListInPassive == null ||
+                pending.equipedBookIdListInPassive == null) return true;
             var passives = book.GetPassiveModelList();
             if (passives == null) return true;
+            var initialized = false;
             foreach (var passive in passives)
             {
-                if (passive == null || passive.originData == null || passive.reservedData == null) return true;
+                if (passive == null || passive.originData == null) return true;
+                // Vanilla construction and save loading create origin only. The popup
+                // creates reserved data when inheritance editing actually begins.
+                if (passive.reservedData == null) continue;
+                initialized = true;
                 var old = passive.originData; var next = passive.reservedData;
                 if (old.receivepassivebookId != next.receivepassivebookId ||
                     old.givePassiveBookId != next.givePassiveBookId ||
                     !SamePassiveId(old.currentpassive, next.currentpassive)) return true;
             }
-            return false;
+            // A loaded receiver has committed sources but a constructor-default
+            // empty book reserve. Ignore only that unused default buffer; a
+            // non-default book-only pending edit must still match committed data.
+            if (!initialized && pending.equipedPassiveBookInstanceId == -1 &&
+                pending.equipedBookIdListInPassive.Count == 0) return false;
+            return original.equipedPassiveBookInstanceId != pending.equipedPassiveBookInstanceId ||
+                !original.equipedBookIdListInPassive.SequenceEqual(pending.equipedBookIdListInPassive);
         }
 
         private static bool SamePassiveId(PassiveXmlInfo left, PassiveXmlInfo right)
         {
             if (ReferenceEquals(left, right)) return true;
             if (left == null || right == null || left.id == null || right.id == null) return false;
-            return left.id.id == right.id.id && string.Equals(left.id.packageId, right.id.packageId,
+            return left.isNegative == right.isNegative && left.rare == right.rare &&
+                left.id.id == right.id.id && string.Equals(left.id.packageId, right.id.packageId,
                 StringComparison.Ordinal);
         }
 

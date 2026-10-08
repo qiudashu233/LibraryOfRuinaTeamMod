@@ -526,6 +526,9 @@ namespace RuinaCoop
                 // flags before triggering any original panel transition.
                 RestoreTutorial();
                 foreach (var pair in PreviousUi) if (_uiData != null) pair.Key.SetValue(_uiData, pair.Value);
+                // On application shutdown Unity may have already destroyed the UI.
+                // Managed state and mirror ownership still retire in finally.
+                if (!NativeUi.IsAlive(_controller)) return;
                 // Hidden native panels retain their unit fields between phases.
                 // Rebind them before retiring the mirror registry, even when the
                 // user's previous page did not include the card panel.
@@ -538,7 +541,7 @@ namespace RuinaCoop
                     NativeUi.Set(NativeUi.Get(equip, "_equipDeckPanel"), "currentunit", localUnit);
                     NativeUi.Set(NativeUi.Get(cardPanel, "_invenCardList"), "_unitdata", localUnit);
                     NativeUi.Set(NativeUi.Get(cardPanel, "librarianInfoPanel"), "unitdata", localUnit);
-                    if (localUnit != null) NativeUi.Call(cardPanel, "OnUpdatePhase");
+                    if (localUnit != null && NativeUi.IsAlive(cardPanel)) NativeUi.Call(cardPanel, "OnUpdatePhase");
                     else
                     {
                         ((IList)NativeUi.Get(NativeUi.Get(cardPanel, "_invenCardList"), "_originCardList")).Clear();
@@ -548,23 +551,29 @@ namespace RuinaCoop
                 var renderer = NativeUi.Singleton("UI.UICharacterRenderer");
                 // DestroyCharacters releases the asset references/cameras. It does
                 // not clear unitModel/resName, so explicitly clear empty slots too.
-                NativeUi.Call(renderer, "DestroyCharacters");
-                foreach (var slot in (IList)NativeUi.Get(renderer, "characterList"))
+                if (NativeUi.IsAlive(renderer))
                 {
-                    NativeUi.Set(slot, "unitModel", null);
-                    NativeUi.Set(slot, "resName", "");
-                }
-                for (var i = 0; i < PreviousRenderUnits.Count; i++)
-                {
-                    var unit = PreviousRenderUnits[i];
-                    if (unit == null) continue;
-                    NativeUi.Call(renderer, "SetCharacter", unit, i, true, false);
-                    unit.textureIndex = PreviousTextureIndices[i];
+                    NativeUi.Call(renderer, "DestroyCharacters");
+                    foreach (var slot in (IList)NativeUi.Get(renderer, "characterList"))
+                    {
+                        NativeUi.Set(slot, "unitModel", null);
+                        NativeUi.Set(slot, "resName", "");
+                    }
+                    for (var i = 0; i < PreviousRenderUnits.Count; i++)
+                    {
+                        var unit = PreviousRenderUnits[i];
+                        if (unit == null) continue;
+                        NativeUi.Call(renderer, "SetCharacter", unit, i, true, false);
+                        unit.textureIndex = PreviousTextureIndices[i];
+                    }
                 }
                 if (_controller != null && _previousPhase != null) NativeUi.Call(_controller, "CallUIPhase", _previousPhase);
-                var cachedUnits = (IList)NativeUi.Get(renderer, "currentDataList");
-                cachedUnits.Clear();
-                foreach (var unit in PreviousRendererData) cachedUnits.Add(unit);
+                if (NativeUi.IsAlive(renderer))
+                {
+                    var cachedUnits = (IList)NativeUi.Get(renderer, "currentDataList");
+                    cachedUnits.Clear();
+                    foreach (var unit in PreviousRendererData) cachedUnits.Add(unit);
+                }
                 var phaseStack = NativeUi.Get(_controller, "_uiPhaseStack");
                 NativeUi.Call(phaseStack, "Clear");
                 for (var i = PreviousPhaseStack.Count - 1; i >= 0; i--) NativeUi.Call(phaseStack, "Push", PreviousPhaseStack[i]);

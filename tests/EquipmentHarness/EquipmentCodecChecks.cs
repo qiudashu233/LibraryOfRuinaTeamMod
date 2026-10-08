@@ -233,6 +233,8 @@ internal static class EquipmentCodecChecks
         var book = new BookModel { BookId = new LorId { id = id }, instanceId = instance, HP = 88, Break = 55 };
         book.Cards.Add(new DiceCardXmlInfo { id = new LorId { id = 600 } });
         book.Passives.Add(new BookPassiveInfo { passive = new PassiveXmlInfo { id = new LorId { id = 4001 } } });
+        book.PassiveModels.Add(new PassiveModel(new LorId { id = 4001 }, instance, 0));
+        book.PassiveModels.Add(new PassiveModel(new LorId { id = -1 }, instance, 1));
         return book;
     }
 
@@ -299,26 +301,104 @@ internal static class EquipmentCodecChecks
             Check(Find(replaced, replacement).BookToken != available.BookToken &&
                 !EquipmentMirror.TryResolveBook(replaced, available.BookToken, out resolved), "recreated object with same instance number cannot reuse old token");
             BookInventoryModel.Instance.Books.Remove(replacement); BookInventoryModel.Instance.Books.Add(target);
-            target.originData.equipedBookIdListInPassive.Add(999); target.reservedData.equipedBookIdListInPassive.Add(999);
-            var passive = new PassiveModel();
-            passive.originData.currentpassive = new PassiveXmlInfo { id = new LorId { id = 4001 } };
-            passive.reservedData.currentpassive = new PassiveXmlInfo { id = new LorId { id = 4001 } };
+            // Vanilla constructors initialize committed passive data only, including
+            // the 9999999 empty slots. Save loading follows the same lazy lifecycle.
+            Check(target.PassiveModels.All(model => model.originData != null && model.reservedData == null),
+                "real constructor lifecycle leaves active and empty-slot reserves absent");
+            available = Find(CaptureSnapshot(unit), target);
+            Check(available.Flags == CoreBookFlags.None && available.Display.Available,
+                "new vanilla ordinary page is editable without opening inheritance popup");
+            Check(target.PassiveModels.All(model => model.reservedData == null), "capture never initializes native draft buffers");
+            var loaded = new PassiveModel(target.instanceId)
+            {
+                originData = new PassiveModel.PassiveModelSavedData
+                {
+                    currentpassive = new PassiveXmlInfo { id = new LorId { id = 4001 } },
+                    receivepassivebookId = target.instanceId, givePassiveBookId = 999
+                }
+            };
+            target.PassiveModels[0] = loaded;
+            target.originData.equipedBookIdListInPassive.Add(999);
+            available = Find(CaptureSnapshot(unit), target);
+            Check(available.Flags == CoreBookFlags.None && available.Display.PassiveIds.SequenceEqual(new[] { 4001 }),
+                "loaded committed receiver can use default empty book reserve and lazy passive buffers");
+            Check(target.reservedData.equipedBookIdListInPassive.Count == 0 && loaded.reservedData == null &&
+                target.originData.equipedBookIdListInPassive.SequenceEqual(new[] { 999 }),
+                "capture preserves committed receiver and unused buffers without normalizing game state");
+            target.originData.equipedPassiveBookInstanceId = 101;
+            available = Find(CaptureSnapshot(unit), target);
+            Check((available.Flags & CoreBookFlags.PassiveBound) != 0, "loaded donor remains bound with absent passive reserves");
+            target.originData.equipedPassiveBookInstanceId = -1;
+            target.reservedData.equipedPassiveBookInstanceId = 101;
+            available = Find(CaptureSnapshot(unit), target);
+            Check((available.Flags & (CoreBookFlags.PassiveBound | CoreBookFlags.DraftMismatch)) ==
+                (CoreBookFlags.PassiveBound | CoreBookFlags.DraftMismatch), "book-only non-default pending donor stays blocked");
+            target.reservedData.equipedPassiveBookInstanceId = -1;
+            target.reservedData.equipedBookIdListInPassive.Add(998);
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0,
+                "book-only pending source is not hidden by lazy passive buffers");
+            target.reservedData.equipedBookIdListInPassive.Clear();
+            loaded.InitReservedData();
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0,
+                "partial passive initialization proves empty book reserve is a deletion draft");
+            target.reservedData.equipedBookIdListInPassive.Add(999);
+            foreach (var model in target.PassiveModels) if (model.reservedData == null) model.InitReservedData();
+            var passive = new PassiveModel(new LorId { id = 4001 }, target.instanceId, 0);
+            passive.InitReservedData();
             target.PassiveModels.Add(passive);
             available = Find(CaptureSnapshot(unit), target);
-            Check(available.Flags == CoreBookFlags.None && available.Display.PassiveIds.SequenceEqual(new[] { 4001 }), "committed receiver and equal passive ID clones are eligible");
+            Check(available.Flags == CoreBookFlags.None && available.Display.PassiveIds.SequenceEqual(new[] { 4001 }),
+                "initialized committed receiver and equal passive ID clones remain eligible");
             target.originData.equipedPassiveBookInstanceId = 101; target.reservedData.equipedPassiveBookInstanceId = 101;
-            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.PassiveBound) != 0, "actual passive donor is occupied");
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.PassiveBound) != 0, "initialized actual passive donor stays occupied");
             target.originData.equipedPassiveBookInstanceId = -1; target.reservedData.equipedPassiveBookInstanceId = -1;
+            target.reservedData.equipedBookIdListInPassive.Clear();
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0,
+                "book source deletion after popup initialized buffers remains a draft");
+            target.reservedData.equipedBookIdListInPassive.Add(999);
             target.reservedData.equipedBookIdListInPassive[0] = 998;
             Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "unsubmitted source list draft is explicit");
             target.reservedData.equipedBookIdListInPassive[0] = 999;
+            target.originData.equipedBookIdListInPassive.Add(998);
+            target.reservedData.equipedBookIdListInPassive.Insert(0, 998);
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0,
+                "initialized source list order differences remain a draft");
+            target.originData.equipedBookIdListInPassive.RemoveAt(1); target.reservedData.equipedBookIdListInPassive.RemoveAt(0);
             passive.reservedData.currentpassive.id.id = 4002;
             Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "unsubmitted passive selection draft is explicit");
+            passive.reservedData.currentpassive.id.id = 4001;
+            passive.reservedData.currentpassive.isNegative = true;
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "vanilla negative-passive difference remains a draft");
+            passive.reservedData.currentpassive.isNegative = false; passive.reservedData.currentpassive.rare = 1;
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "vanilla passive rarity difference remains a draft");
+            passive.reservedData.currentpassive.rare = 0;
+            var originalXml = passive.originData.currentpassive; var pendingXml = passive.reservedData.currentpassive;
             passive.originData.currentpassive = null; passive.reservedData.currentpassive = null;
             Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) == 0, "matching null passive slots are committed metadata");
+            passive.reservedData.currentpassive = pendingXml;
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "one missing passive selection stays a draft");
+            passive.originData.currentpassive = originalXml;
             passive.reservedData.receivepassivebookId = 5;
             Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "unsubmitted passive receiver draft is explicit");
-            passive.reservedData.receivepassivebookId = -1;
+            passive.reservedData.receivepassivebookId = passive.originData.receivepassivebookId;
+            passive.reservedData.givePassiveBookId = 5;
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "unsubmitted passive donor draft is explicit");
+            passive.reservedData.givePassiveBookId = passive.originData.givePassiveBookId;
+            var originalData = passive.originData; passive.originData = null;
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "missing committed passive data is never editable");
+            passive.originData = originalData;
+            var originalBook = target.originData; target.originData = null;
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "missing committed book data is never editable");
+            target.originData = originalBook;
+            var pendingBook = target.reservedData; target.reservedData = null;
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "missing constructor book buffer stays unsupported");
+            target.reservedData = pendingBook;
+            var sources = target.originData.equipedBookIdListInPassive; target.originData.equipedBookIdListInPassive = null;
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "missing committed source list stays unsupported");
+            target.originData.equipedBookIdListInPassive = sources;
+            sources = target.reservedData.equipedBookIdListInPassive; target.reservedData.equipedBookIdListInPassive = null;
+            Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.DraftMismatch) != 0, "missing pending source list stays unsupported");
+            target.reservedData.equipedBookIdListInPassive = sources;
             target.BlueLocked = true;
             Check((Find(CaptureSnapshot(unit), target).Flags & CoreBookFlags.Locked) != 0, "blue-primary lock captured"); target.BlueLocked = false;
             target.Cards.Clear(); for (var i = 0; i < 65; i++) target.Cards.Add(new DiceCardXmlInfo { id = new LorId { id = 600 } });

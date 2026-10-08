@@ -736,7 +736,7 @@ namespace RuinaCoop
                 Status = "Sharing host progress with " + _guests.Count + " guest(s).";
                 Debug.Log("[RuinaCoop] Progress snapshot " + snapshot.Sequence + ": " +
                     snapshot.Stages.Count + " stages, " + snapshot.Floors.Count +
-                    " floors, " + packet.Length + " bytes; local decode PASS.");
+                    " floors, " + packet.Length + " bytes; local decode PASS; " + CoreInventorySummary(snapshot));
                 return true;
             }
             catch (Exception exception)
@@ -749,6 +749,21 @@ namespace RuinaCoop
                 Status = nextStatus;
                 return false;
             }
+        }
+
+        private static string CoreInventorySummary(ProgressSnapshot snapshot)
+        {
+            if (!snapshot.CoreBooksAvailable) return "core inventory unavailable: " + snapshot.CoreBooksReason;
+            var free = 0; var drafts = 0; var sources = 0; var equipped = 0;
+            foreach (var book in snapshot.CoreBooks)
+            {
+                if (book.Kind == CoreBookKind.Ordinary && book.Flags == CoreBookFlags.None) free++;
+                if ((book.Flags & CoreBookFlags.DraftMismatch) != 0) drafts++;
+                if ((book.Flags & CoreBookFlags.PassiveBound) != 0) sources++;
+                if ((book.Flags & CoreBookFlags.Equipped) != 0) equipped++;
+            }
+            return "core pages " + snapshot.CoreBooks.Count + ", free ordinary " + free +
+                ", pending drafts " + drafts + ", passive sources " + sources + ", equipped " + equipped + ".";
         }
 
         private static bool SameDeckData(ProgressSnapshot left, ProgressSnapshot right)
