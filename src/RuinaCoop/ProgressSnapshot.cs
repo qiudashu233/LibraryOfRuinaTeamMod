@@ -10,7 +10,7 @@ namespace RuinaCoop
     internal sealed class ProgressSnapshot
     {
         private const uint Magic = 0x52435053;
-        private const byte WireVersion = 2;
+        private const byte WireVersion = 4;
         private const int MaxPacketBytes = 65536;
         private const int MaxStages = 512;
         private const int MaxFloors = 12;
@@ -23,9 +23,63 @@ namespace RuinaCoop
         internal int SelectedStageId;
         internal byte SelectedFloorId = PrepClaims.NoFloor;
         internal uint ClaimRevision;
+        internal uint DeckRevision;
+        internal bool DecksFrozen;
+        internal readonly List<UnitDeckEntry> UnitDecks = new List<UnitDeckEntry>();
+        internal readonly List<CardStockEntry> CardStock = new List<CardStockEntry>();
         internal readonly List<ulong> ClaimOwners = new List<ulong>();
         internal readonly List<StageEntry> Stages = new List<StageEntry>();
         internal readonly List<FloorEntry> Floors = new List<FloorEntry>();
+
+        internal sealed class UnitDeckEntry
+        {
+            // Stable host unit token; zero means no supported editable identity.
+            internal ulong UnitIdentity;
+            internal readonly UnitDisplayEntry Display = new UnitDisplayEntry();
+            // Zero identifies an absent or unsupported key page, which is view only.
+            internal int BookId;
+            internal int BookInstanceId;
+            internal int Capacity;
+            internal bool Fixed;
+            internal bool MultiDeck;
+            internal readonly List<int> Cards = new List<int>();
+        }
+
+        // Read-only presentation data for isolated native editor models. No save graph,
+        // inventory references, arbitrary resource path, or render texture index crosses the wire.
+        internal sealed class UnitDisplayEntry
+        {
+            internal bool Available;
+            internal int MaxHp;
+            internal int Break;
+            internal readonly List<int> PassiveIds = new List<int>();
+            internal bool AppearanceAvailable;
+            internal int DefaultBookId;
+            internal int CustomBookId;
+            internal bool IsSephirah;
+            internal byte Gender;
+            internal byte AppearanceType;
+            internal string CharacterSkin = "";
+            internal bool UseCustom;
+            internal int SpecialCustomId = -1;
+            internal int FrontHair = -1;
+            internal int BackHair = -1;
+            internal int Eye = -1;
+            internal int Brow = -1;
+            internal int Mouth = -1;
+            internal int Head = -1;
+            // RGBA, most significant byte R, least significant byte A.
+            internal uint HairColor;
+            internal uint EyeColor;
+            internal uint SkinColor;
+            internal int Height = 170;
+        }
+
+        internal sealed class CardStockEntry
+        {
+            internal int Id;
+            internal int Count;
+        }
 
         internal sealed class StageEntry
         {
@@ -125,6 +179,12 @@ namespace RuinaCoop
 
         internal byte[] Encode(ulong roomId)
         {
+            if (Stages.Count > MaxStages || Floors.Count > MaxFloors ||
+                ClaimOwners.Count > MaxUnitsPerFloor ||
+                Floors.Any(floor => floor == null || floor.Units.Count > MaxUnitsPerFloor))
+            {
+                throw new InvalidOperationException("Progress snapshot entry count exceeds the limit.");
+            }
             using (var stream = new MemoryStream())
             using (var writer = new BinaryWriter(stream, Encoding.UTF8))
             {
@@ -161,6 +221,8 @@ namespace RuinaCoop
                 {
                     writer.Write(owner);
                 }
+                writer.Write(DeckRevision);
+                DeckMirror.WriteData(writer, this, false);
                 writer.Flush();
                 if (stream.Length > MaxPacketBytes)
                 {
@@ -181,7 +243,7 @@ namespace RuinaCoop
         {
             snapshot = null;
             reason = null;
-            if (packet == null || packet.Length > MaxPacketBytes || packet.Length < 30)
+            if (packet == null || packet.Length > MaxPacketBytes || packet.Length < 47)
             {
                 return Reject(out reason, "Packet size is invalid.");
             }
@@ -230,9 +292,9 @@ namespace RuinaCoop
                         {
                             return Reject(out reason, "Stage " + i + " has a nonpositive ID: " + entry.Id + ".");
                         }
-                        if (entry.State == StoryState.Close)
+                        if (!Enum.IsDefined(typeof(StoryState), entry.State) || entry.State == StoryState.Close)
                         {
-                            return Reject(out reason, "Stage " + i + " is closed.");
+                            return Reject(out reason, "Stage " + i + " has a closed or invalid state.");
                         }
                         if (!stageIds.Add(entry.Id))
                         {
@@ -253,6 +315,11 @@ namespace RuinaCoop
                             Sephirah = (SephirahType)reader.ReadByte(),
                             Level = reader.ReadInt32()
                         };
+                        if (!Enum.IsDefined(typeof(SephirahType), entry.Sephirah) ||
+                            entry.Sephirah == SephirahType.None || entry.Sephirah == SephirahType.ETC)
+                        {
+                            return Reject(out reason, "Floor " + i + " has an invalid ID.");
+                        }
                         if (!floorIds.Add(entry.Sephirah))
                         {
                             return Reject(out reason, "Floor " + i + " repeats ID " + entry.Sephirah + ".");
@@ -278,6 +345,11 @@ namespace RuinaCoop
                     for (var i = 0; i < ownerCount; i++)
                     {
                         result.ClaimOwners.Add(reader.ReadUInt64());
+                    }
+                    result.DeckRevision = reader.ReadUInt32();
+                    if (!DeckMirror.TryReadData(reader, result, out reason))
+                    {
+                        return false;
                     }
                     if (stream.Position != stream.Length)
                     {
@@ -329,6 +401,10 @@ namespace RuinaCoop
             while (bytes.Length > MaxNameBytes)
             {
                 safeName = safeName.Substring(0, safeName.Length - 1);
+                if (safeName.Length != 0 && char.IsHighSurrogate(safeName[safeName.Length - 1]))
+                {
+                    safeName = safeName.Substring(0, safeName.Length - 1);
+                }
                 bytes = Encoding.UTF8.GetBytes(safeName);
             }
             writer.Write((ushort)bytes.Length);
@@ -342,7 +418,7 @@ namespace RuinaCoop
             {
                 throw new InvalidDataException("Invalid name length in progress snapshot.");
             }
-            return Encoding.UTF8.GetString(reader.ReadBytes(byteLength));
+            return new UTF8Encoding(false, true).GetString(reader.ReadBytes(byteLength));
         }
     }
 }

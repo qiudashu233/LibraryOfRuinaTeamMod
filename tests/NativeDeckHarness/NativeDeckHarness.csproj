@@ -6,12 +6,12 @@
     <NoWarn>$(NoWarn);CS0649</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../src/RuinaCoop/NativeDeckBinding.cs" Link="NativeDeckBinding.cs" />
     <Compile Include="../../src/RuinaCoop/ProgressSnapshot.cs" Link="ProgressSnapshot.cs" />
+    <Compile Include="../../src/RuinaCoop/DeckMirror.cs" Link="DeckMirror.cs" />
     <Compile Include="../../src/RuinaCoop/PrepClaims.cs" Link="PrepClaims.cs" />
-    <Compile Include="../../src/RuinaCoop/ClaimProtocol.cs" Link="ClaimProtocol.cs" />
-    <Compile Include="../../src/RuinaCoop/RelayAuth.cs" Link="RelayAuth.cs" />
     <Compile Include="../../src/RuinaCoop/DeckProtocol.cs" Link="DeckProtocol.cs" />
     <Compile Include="../../src/RuinaCoop/DeckAuthority.cs" Link="DeckAuthority.cs" />
-    <Compile Include="../../src/RuinaCoop/DeckMirror.cs" Link="DeckMirror.cs" />
+    <Compile Include="../CodecHarness/GameStubs.cs" Link="GameStubs.cs" />
   </ItemGroup>
 </Project>

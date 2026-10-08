@@ -1,13 +1,32 @@
 using System.Collections.Generic;
 
+namespace UnityEngine
+{
+    internal struct Color
+    {
+        internal float r, g, b, a;
+        internal Color(float red, float green, float blue, float alpha = 1f)
+        { r = red; g = green; b = blue; a = alpha; }
+    }
+}
+
 namespace UI
 {
-    internal enum StoryState { Close, Open, Clear }
+    internal enum StoryState { FirstOpen = 0, Open = 1, Clear = 2, Close = 3 }
+}
+
+namespace LOR_DiceSystem
+{
+    internal sealed class DiceCardXmlInfo { internal RuinaCoop.LorId id; }
 }
 
 namespace RuinaCoop
 {
-    internal enum SephirahType { Malkuth, Yesod, Hod, Netzach, Tiphereth, Gebura, Chesed, Binah, Hokma, Keter }
+    internal enum SephirahType
+    {
+        None = 0, Malkuth = 1, Yesod = 2, Hod = 3, Netzach = 4,
+        Tiphereth = 5, Gebura = 6, Chesed = 7, Binah = 8, Hokma = 9, Keter = 10, ETC = 11
+    }
 
     internal sealed class LibraryModel
     {
@@ -22,27 +41,100 @@ namespace RuinaCoop
     {
         internal SephirahType Sephirah;
         internal int Level;
-        internal List<UnitData> Units = new List<UnitData>();
-        internal List<UnitData> GetUnitDataList() => Units;
+        internal List<UnitDataModel> Units = new List<UnitDataModel>();
+        internal List<UnitDataModel> GetUnitDataList() => Units;
     }
 
-    internal sealed class UnitData { internal string name; }
-    internal sealed class StageId
+    internal enum Gender { F = 0, M = 1, N = 2, Creature = 3, EGO = 4 }
+
+    internal sealed class UnitCustomizingData
+    {
+        internal bool UseCustomData;
+        internal int height = 170;
+        internal LorId specialCustomID = new LorId { id = -1 };
+        internal int frontHairID = -1, backHairID = -1, eyeID = -1,
+            browID = -1, mouthID = -1, headID = -1;
+        internal UnityEngine.Color hairColor = new UnityEngine.Color(0, 0, 0);
+        internal UnityEngine.Color eyeColor = new UnityEngine.Color(0, 0, 0);
+        internal UnityEngine.Color skinColor = new UnityEngine.Color(1, 1, 1);
+    }
+
+    internal sealed class PassiveXmlInfo { internal LorId id; }
+    internal sealed class BookPassiveInfo { internal PassiveXmlInfo passive; }
+
+    internal sealed class UnitDataModel
+    {
+        internal string name;
+        internal BookModel bookItem;
+        internal bool Locked;
+        internal int MaxHp = 100;
+        internal int Break = 50;
+        internal BookModel defaultBook;
+        internal BookModel AppearanceBook;
+        internal BookModel CustomBookItem => AppearanceBook ?? bookItem;
+        internal UnitCustomizingData customizeData = new UnitCustomizingData();
+        internal bool isSephirah;
+        internal Gender gender;
+        internal Gender appearanceType;
+        internal string workshopSkin;
+        internal bool IsChangeItemLock() => Locked;
+    }
+
+    internal sealed class BookModel
+    {
+        internal LorId BookId = new LorId();
+        internal int instanceId;
+        internal int DeckSize = 9;
+        internal bool Fixed;
+        internal bool MultiDeck;
+        internal bool Locked;
+        internal readonly List<LOR_DiceSystem.DiceCardXmlInfo> Cards =
+            new List<LOR_DiceSystem.DiceCardXmlInfo>();
+        internal string CharacterSkin = "";
+        internal readonly List<BookPassiveInfo> Passives = new List<BookPassiveInfo>();
+        internal string GetCharacterName() => CharacterSkin;
+        internal List<BookPassiveInfo> GetPassiveInfoList(bool ignored) => Passives;
+        internal int GetDeckSize() => DeckSize;
+        internal bool IsFixedDeck() => Fixed;
+        internal bool IsMultiDeck() => MultiDeck;
+        internal bool IsDeckLocked() => Locked;
+        internal List<LOR_DiceSystem.DiceCardXmlInfo> GetCardListFromCurrentDeck() => Cards;
+    }
+
+    internal class LorId
     {
         internal int id;
-        internal bool IsBasic() => true;
+        internal string packageId;
+        internal bool IsBasic() => string.IsNullOrEmpty(packageId);
     }
+
+    internal sealed class StageId : LorId { }
     internal sealed class StageData
     {
-        internal StageId id;
+        internal LorId id;
         internal int chapter;
         internal UI.StoryState currentState;
         internal string stageName;
     }
+
     internal sealed class StageClassInfoList
     {
         internal static StageClassInfoList Instance = new StageClassInfoList();
         internal List<StageData> Stages = new List<StageData>();
         internal List<StageData> GetAllDataList() => Stages;
+    }
+
+    internal sealed class DiceCardItemModel
+    {
+        internal LorId Id;
+        internal int num;
+        internal LorId GetID() => Id;
+    }
+
+    internal sealed class InventoryModel
+    {
+        internal static InventoryModel Instance = new InventoryModel();
+        internal readonly List<DiceCardItemModel> Cards = new List<DiceCardItemModel>();
+        internal List<DiceCardItemModel> GetCardList() => Cards;
     }
 }
