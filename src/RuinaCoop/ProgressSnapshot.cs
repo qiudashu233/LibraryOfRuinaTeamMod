@@ -26,7 +26,7 @@ namespace RuinaCoop
     internal sealed class ProgressSnapshot
     {
         private const uint Magic = 0x52435053;
-        private const byte WireVersion = 6;
+        private const byte WireVersion = 7;
         private const int MaxPacketBytes = 65536;
         private const int MaxStages = 512;
         private const int MaxFloors = 12;

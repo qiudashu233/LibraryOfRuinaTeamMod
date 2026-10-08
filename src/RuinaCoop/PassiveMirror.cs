@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 
 namespace RuinaCoop
@@ -12,6 +13,9 @@ namespace RuinaCoop
         internal const int EmptyId = 9999999;
         private const int MaxStat = 1000;
         private const int MaxPacketBytes = 65536;
+        internal const int MaxExpandedBytes = 4 * 1024 * 1024;
+        private const int CompressedHeaderBytes = 12;
+        private const int MaxCompressedBytes = MaxPacketBytes - CompressedHeaderBytes;
         private const PassiveSlotFlags AllSlotFlags = PassiveSlotFlags.CanGive | PassiveSlotFlags.Locked |
             PassiveSlotFlags.Negative | PassiveSlotFlags.Hidden | PassiveSlotFlags.CanReceive | PassiveSlotFlags.Given;
         private const PassiveBookFlags AllBookFlags = PassiveBookFlags.ReceiverAllowed | PassiveBookFlags.SourceAllowed | PassiveBookFlags.Unsupported;
@@ -164,21 +168,47 @@ namespace RuinaCoop
                 var baseLength = snapshot.Encode(1).Length;
                 snapshot.PassiveBooks.AddRange(rows.Values.Select(row => row.Entry).OrderBy(entry => entry.BookToken));
                 snapshot.PassivesAvailable = true; snapshot.PassivesReason = PassivesReason.None;
-                if (baseLength + EncodeContent(snapshot).Length - 6 > MaxPacketBytes) Unavailable(snapshot, PassivesReason.PacketLimit);
+                if (baseLength + EncodeWireData(snapshot).Length - 6 > MaxPacketBytes) Unavailable(snapshot, PassivesReason.PacketLimit);
             }
             catch { Unavailable(snapshot, PassivesReason.CaptureFailed); }
         }
         internal static byte[] EncodeContent(ProgressSnapshot snapshot)
         {
             using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream))
-            { WriteData(writer, snapshot, true); writer.Flush(); return stream.ToArray(); }
+            {
+                string reason; if (!ValidateData(snapshot, out reason)) throw new InvalidOperationException(reason);
+                // Revision comparison stays independent of the runtime's Deflate encoder.
+                writer.Write((byte)(snapshot.PassivesAvailable ? 1 : 0)); writer.Write((byte)snapshot.PassivesReason);
+                writer.Write((ushort)0); WriteBooks(writer, snapshot, true); writer.Flush(); return stream.ToArray();
+            }
+        }
+        internal static byte[] EncodeWireData(ProgressSnapshot snapshot)
+        {
+            using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream))
+            { WriteData(writer, snapshot, false); writer.Flush(); return stream.ToArray(); }
         }
         internal static void WriteData(BinaryWriter writer, ProgressSnapshot snapshot, bool canonical)
         {
             string reason; if (!ValidateData(snapshot, out reason)) throw new InvalidOperationException(reason);
             writer.Write((byte)(snapshot.PassivesAvailable ? 1 : 0)); writer.Write((byte)snapshot.PassivesReason);
-            // Reserved for a bounded future common presentation header.
-            writer.Write((ushort)0); writer.Write((ushort)snapshot.PassiveBooks.Count);
+            if (!snapshot.PassivesAvailable) { writer.Write((ushort)0); writer.Write((ushort)0); return; }
+            byte[] raw;
+            using (var stream = new MemoryStream()) using (var body = new BinaryWriter(stream))
+            { WriteBooks(body, snapshot, canonical); body.Flush(); raw = stream.ToArray(); }
+            if (raw.Length > MaxExpandedBytes) throw new InvalidOperationException("Passive expanded payload exceeds bounds.");
+            byte[] packed;
+            using (var stream = new MemoryStream())
+            {
+                using (var compressor = new DeflateStream(stream, CompressionLevel.Optimal, true))
+                    compressor.Write(raw, 0, raw.Length);
+                packed = stream.ToArray();
+            }
+            writer.Write((byte)1); writer.Write((byte)0); // Deflate codec; reserved.
+            writer.Write(raw.Length); writer.Write(packed.Length); writer.Write(packed);
+        }
+        private static void WriteBooks(BinaryWriter writer, ProgressSnapshot snapshot, bool canonical)
+        {
+            writer.Write((ushort)snapshot.PassiveBooks.Count);
             var entries = canonical ? snapshot.PassiveBooks.OrderBy(entry => entry.BookToken) : (IEnumerable<ProgressSnapshot.PassiveBookEntry>)snapshot.PassiveBooks;
             foreach (var entry in entries)
             {
@@ -204,7 +234,80 @@ namespace RuinaCoop
         {
             reason = null; var available = reader.ReadByte(); if (available > 1) return Reject(out reason, "Passive availability flag is invalid.");
             snapshot.PassivesAvailable = available != 0; snapshot.PassivesReason = (PassivesReason)reader.ReadByte();
-            if (reader.ReadUInt16() != 0) return Reject(out reason, "Passive reserved header is invalid.");
+            if (!snapshot.PassivesAvailable)
+            {
+                if (reader.ReadUInt16() != 0 || reader.ReadUInt16() != 0) return Reject(out reason, "Unavailable passive payload is invalid.");
+                return ValidateData(snapshot, out reason);
+            }
+            if (snapshot.PassivesReason != PassivesReason.None || reader.ReadByte() != 1 || reader.ReadByte() != 0)
+                return Reject(out reason, "Passive compression header is invalid.");
+            var expandedLength = reader.ReadInt32(); var compressedLength = reader.ReadInt32();
+            if (expandedLength < 2 || expandedLength > MaxExpandedBytes || compressedLength <= 0 || compressedLength > MaxCompressedBytes ||
+                compressedLength > reader.BaseStream.Length - reader.BaseStream.Position)
+                return Reject(out reason, "Passive compression lengths exceed bounds.");
+            var compressed = reader.ReadBytes(compressedLength);
+            if (compressed.Length != compressedLength) return Reject(out reason, "Passive compression payload is truncated.");
+            var raw = new byte[expandedLength];
+            try
+            {
+                using (var input = new ExactDeflateInput(compressed))
+                using (var decompressor = new DeflateStream(input, CompressionMode.Decompress, true))
+                {
+                    var offset = 0;
+                    while (offset < raw.Length)
+                    {
+                        var read = decompressor.Read(raw, offset, raw.Length - offset);
+                        if (read == 0) return Reject(out reason, "Passive expanded payload is truncated.");
+                        offset += read;
+                    }
+                    // An extra output byte rejects expansion beyond the declared bound.
+                    // ReadPastEnd also catches a missing Deflate terminator when some
+                    // runtimes return EOF silently after producing the expected bytes.
+                    if (decompressor.ReadByte() != -1 || input.ReadPastEnd || input.Position != input.Length)
+                        return Reject(out reason, "Passive compressed stream is incomplete or contains trailing data.");
+                }
+                using (var body = new BinaryReader(new MemoryStream(raw, false)))
+                {
+                    if (!TryReadBooks(body, snapshot, out reason)) return false;
+                    if (body.BaseStream.Position != body.BaseStream.Length)
+                        return Reject(out reason, "Passive expanded stream contains trailing data.");
+                }
+                return ValidateData(snapshot, out reason);
+            }
+            catch (IOException) { return Reject(out reason, "Passive compressed or expanded stream is invalid."); }
+        }
+        // Limit read-ahead so Deflate cannot silently consume an appended second
+        // stream or trailing bytes. At most 64 KiB of input is read one byte at a time.
+        private sealed class ExactDeflateInput : Stream
+        {
+            private readonly MemoryStream _input;
+            internal bool ReadPastEnd;
+            internal ExactDeflateInput(byte[] data) { _input = new MemoryStream(data, false); }
+            public override bool CanRead { get { return true; } }
+            public override bool CanSeek { get { return false; } }
+            public override bool CanWrite { get { return false; } }
+            public override long Length { get { return _input.Length; } }
+            public override long Position { get { return _input.Position; } set { throw new NotSupportedException(); } }
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (count == 0) return 0;
+                var read = _input.Read(buffer, offset, Math.Min(count, 1));
+                if (read == 0) ReadPastEnd = true;
+                return read;
+            }
+            public override int ReadByte()
+            {
+                var value = _input.ReadByte(); if (value == -1) ReadPastEnd = true; return value;
+            }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+            public override void SetLength(long value) { throw new NotSupportedException(); }
+            public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+            protected override void Dispose(bool disposing) { if (disposing) _input.Dispose(); base.Dispose(disposing); }
+        }
+        private static bool TryReadBooks(BinaryReader reader, ProgressSnapshot snapshot, out string reason)
+        {
+            reason = null;
             var count = reader.ReadUInt16(); if (count > EquipmentMirror.MaxBooks) return Reject(out reason, "Passive book count exceeds bounds.");
             for (var i = 0; i < count; i++)
             {
@@ -231,7 +334,7 @@ namespace RuinaCoop
                 }
                 snapshot.PassiveBooks.Add(entry);
             }
-            return ValidateData(snapshot, out reason);
+            return true;
         }
         internal static bool ValidateData(ProgressSnapshot snapshot, out string reason)
         {

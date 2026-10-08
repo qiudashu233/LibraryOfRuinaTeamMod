@@ -1,4 +1,4 @@
-# Read-only real-DLL contracts and pure compiled lifecycle state. Never invokes
+﻿# Read-only real-DLL contracts and pure compiled lifecycle state. Never invokes
 # Unity UI, Steam transport, game model constructors, or original equip methods.
 param(
     [string]$GameDir = 'D:\game\steamapps\common\Library Of Ruina',
@@ -201,6 +201,23 @@ if($null -ne $passiveEditor) {
         (Get-PassiveValue $receiver 'Slots').Add($slot); (Get-PassiveValue $snapshot 'PassiveBooks').Add($receiver)
         return $snapshot
     }
+    $failureStatus = $passiveEditor.GetMethod('OpenFailureStatus',$passiveFlags)
+    Assert-Passive (@($openIl|Where-Object{$_.Operand -is [Reflection.MethodBase] -and $_.Operand.Name -eq 'OpenFailureStatus'}).Count -eq 1) 'Actual open failure uses the specific inventory diagnostic'
+    $statusSnapshot=New-PassiveSnapshot
+    Set-PassiveValue $statusSnapshot 'PassivesAvailable' $false
+    $reasonType=$GuardSmokeModAssembly.GetType('RuinaCoop.PassivesReason',$true)
+    foreach($diagnostic in @(@(3,'传输上限'),@(4,'采集失败'),@(6,'核心书库'),@(1,'等待房主'))) {
+        Set-PassiveValue $statusSnapshot 'PassivesReason' ([Enum]::ToObject($reasonType,[int]$diagnostic[0]))
+        $statusText=[string]$failureStatus.Invoke($null,@($statusSnapshot,[byte]0))
+        Assert-Passive ($statusText.Contains($diagnostic[1]) -and -not $statusText.Contains('认领')) "Inventory failure is distinguished from claim ownership: $($diagnostic[0])"
+    }
+    Set-PassiveValue $statusSnapshot 'PassivesAvailable' $true
+    $statusReceiver=(Get-PassiveValue $statusSnapshot 'PassiveBooks')[0]
+    Set-PassiveValue $statusReceiver 'Flags' ([Enum]::ToObject(($GuardSmokeModAssembly.GetType('RuinaCoop.PassiveBookFlags',$true)),4))
+    Assert-Passive (([string]$failureStatus.Invoke($null,@($statusSnapshot,[byte]0))).Contains('结构')) 'Unsupported receiver has its own failure reason'
+    (Get-PassiveValue $statusSnapshot 'PassiveBooks').Clear()
+    Assert-Passive (([string]$failureStatus.Invoke($null,@($statusSnapshot,[byte]0))).Contains('缺少')) 'Missing receiver metadata has its own failure reason'
+    Assert-Passive (([string]$failureStatus.Invoke($null,@($null,[byte]0))).Contains('等待房主')) 'Missing snapshot reports synchronization wait'
     $draftType=$GuardSmokeModAssembly.GetType('RuinaCoop.NativePassiveDraft',$true)
     $snapshot=New-PassiveSnapshot; $create=[object[]]@([uint64]77,$snapshot,[byte]0,[uint64]20,$null)
     Assert-Passive ($draftType.GetMethod('TryCreate',$passiveFlags).Invoke($null,$create)) 'Compiled actual draft can bind DTO without game constructors'

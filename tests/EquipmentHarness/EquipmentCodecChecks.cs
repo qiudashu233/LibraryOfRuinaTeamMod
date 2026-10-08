@@ -69,7 +69,7 @@ internal static class EquipmentCodecChecks
         var original = Snapshot();
         original.CoreBooks[1].BookReference = new object();
         var packet = original.Encode(Room);
-        Check(packet[4] == 6, "snapshot wire version six");
+        Check(packet[4] == 7, "snapshot wire version seven");
         var decoded = Decode(packet, "complete core inventory");
         Check(decoded.CoreBooksAvailable && decoded.CoreBooksReason == CoreBooksReason.None, "availability round trip");
         Check(decoded.UnitDecks[0].BookToken == 400 && decoded.CoreBooks.Count == 2, "current and inventory tokens round trip");

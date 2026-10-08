@@ -322,11 +322,20 @@ namespace RuinaCoop
         internal static bool TryOpen()
         {
             if (Active) return true;
-            if (!NativeDeckEditor.Active || !NativeDeckEditor.Session.IsReadyForDeck || NativeDeckEditor.Session.DeckRequestPending) return false;
+            if (!NativeDeckEditor.Active) { Status = "请从联机馆员编辑页打开被动编辑。"; return false; }
+            if (!NativeDeckEditor.Session.IsReadyForDeck) { Status = "正在等待房主的准备数据。"; return false; }
+            if (NativeDeckEditor.Session.DeckRequestPending) { Status = "正在等待房主确认上一项装备修改。"; return false; }
             NativePassiveDraft draft;
             if (!NativePassiveDraft.TryCreate(NativeDeckEditor.Session.RoomId, NativeDeckEditor.Snapshot,
                 NativeDeckEditor.UnitIndex, SteamClient.SteamId.Value, out draft))
-            { Status = "房主被动数据暂不可用或该核心书页不支持被动编辑。"; return false; }
+            {
+                var snapshot = NativeDeckEditor.Snapshot;
+                Status = OpenFailureStatus(snapshot, NativeDeckEditor.UnitIndex);
+                Debug.LogWarning("[RuinaCoop] Passive editor unavailable: " + Status + " Inventory reason: " +
+                    (snapshot == null ? "NoSnapshot" : snapshot.PassivesReason.ToString()) + "; unit " +
+                    NativeDeckEditor.UnitIndex + "; core books " + (snapshot == null ? 0 : snapshot.CoreBooks.Count) + ".");
+                return false;
+            }
             try
             {
                 _draft = draft; _session = NativeDeckEditor.Session; _factory = new NativeDeckModels();
@@ -349,6 +358,28 @@ namespace RuinaCoop
                 return true;
             }
             catch (Exception exception) { Fail(exception); return false; }
+        }
+        private static string OpenFailureStatus(ProgressSnapshot snapshot, byte unitIndex)
+        {
+            if (snapshot == null) return "正在等待房主的被动数据。";
+            if (!snapshot.PassivesAvailable)
+            {
+                if (snapshot.PassivesReason == PassivesReason.PacketLimit)
+                    return "房主被动书库超过传输上限，无法打开被动编辑。";
+                if (snapshot.PassivesReason == PassivesReason.CaptureFailed)
+                    return "房主被动数据采集失败，请查看房主日志。";
+                if (snapshot.PassivesReason == PassivesReason.CoreInventoryUnavailable)
+                    return "房主核心书库暂不可用，无法打开被动编辑。";
+                if (snapshot.PassivesReason == PassivesReason.NotCaptured)
+                    return "正在等待房主的被动数据。";
+                return "房主被动数据包含当前不支持的内容，无法打开被动编辑。";
+            }
+            if (unitIndex >= snapshot.UnitDecks.Count) return "馆员列表已变化，请重新打开卡组编辑。";
+            var book = snapshot.PassiveBooks.Find(entry => entry.BookToken == snapshot.UnitDecks[unitIndex].BookToken);
+            if (book == null) return "房主快照缺少当前核心书页的被动数据。";
+            if ((book.Flags & PassiveBookFlags.Unsupported) != 0) return "当前核心书页的被动结构暂不支持编辑。";
+            if (book.Slots.Count == 0) return "当前核心书页没有可显示的被动槽。";
+            return "馆员或界面状态已变化，请重新打开卡组编辑。";
         }
         private static void BuildModels()
         {

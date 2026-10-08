@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using RuinaCoop;
 using UI;
@@ -12,7 +13,7 @@ internal static class PassiveCodecChecks
     private static void Check(bool value, string name)
     { _checks++; if (!value) throw new Exception("FAIL passive codec: " + name); }
     internal static int Run()
-    { _checks = 0; Protocol(); Metadata(); Capture(); return _checks; }
+    { _checks = 0; Protocol(); Metadata(); Capture(); RealLibraryScale(); CompressedBoundaries(); return _checks; }
     private static ProgressSnapshot Snapshot()
     {
         var snapshot = new ProgressSnapshot { Sequence = 1, SelectedStageId = 101, SelectedFloorId = 1,
@@ -106,7 +107,7 @@ internal static class PassiveCodecChecks
     {
         var sample = MetadataSample(); var packet = sample.Encode(Room);
         ProgressSnapshot parsed;
-        Check(ProgressSnapshot.TryDecode(packet, Room, out parsed) && packet[4] == 6, "wire6 complete passive metadata round trip");
+        Check(ProgressSnapshot.TryDecode(packet, Room, out parsed) && packet[4] == 7, "wire7 complete passive metadata round trip");
         Check(parsed.PassivesAvailable && parsed.PassivesReason == PassivesReason.None && parsed.PassiveBooks.Count == 3, "complete metadata availability");
         var slot = parsed.PassiveBooks[0].Slots[1];
         Check(slot.OriginId == PassiveMirror.EmptyId && slot.CurrentId == 202 && slot.CurrentCost == 3 && slot.CurrentRarity == 2 &&
@@ -149,12 +150,13 @@ internal static class PassiveCodecChecks
             var failed = false; try { sample.Encode(Room); } catch (InvalidOperationException) { failed = true; }
             Check(failed, "encoder rejects invalid metadata DTO");
         }
-        sample = MetadataSample(); packet = sample.Encode(Room); var start = packet.Length - PassiveMirror.EncodeContent(sample).Length;
-        foreach (var change in new[] { new int[] { 0, 2 }, new int[] { 1, 255 }, new int[] { 2, 1 }, new int[] { 4, 255 },
+        sample = MetadataSample(); packet = sample.Encode(Room); var start = packet.Length - PassiveMirror.EncodeWireData(sample).Length;
+        foreach (var change in new[] { new int[] { 4, 255 },
             new int[] { 14, 8 }, new int[] { 15, 13 }, new int[] { 16, 5 }, new int[] { 17, 5 },
             new int[] { 46, 5 }, new int[] { 65, 2 }, new int[] { 66, 5 }, new int[] { 75, 64 } })
         {
-            var bad = (byte[])packet.Clone(); bad[start + change[0]] = (byte)change[1];
+            var raw = PassiveMirror.EncodeContent(sample).Skip(4).ToArray(); raw[change[0] - 4] = (byte)change[1];
+            var bad = packet.Take(start).Concat(Compressed(raw)).ToArray();
             Check(!ProgressSnapshot.TryDecode(bad, Room, out _), "malformed passive field " + change[0]);
         }
         for (var length = start; length < packet.Length; length++) Check(!ProgressSnapshot.TryDecode(packet.Take(length).ToArray(), Room, out _), "truncated passive graph " + length);
@@ -175,6 +177,183 @@ internal static class PassiveCodecChecks
     }
     private static BookModel Book(int instance)
     { return new BookModel { BookId = new LorId { id = 200 }, instanceId = instance }; }
+    private static byte[] Compressed(byte[] raw, int? declaredRaw = null, byte[] packedOverride = null)
+    {
+        byte[] packed = packedOverride;
+        if (packed == null)
+            using (var stream = new MemoryStream())
+            {
+                using (var deflate = new DeflateStream(stream, CompressionLevel.Optimal, true)) deflate.Write(raw, 0, raw.Length);
+                packed = stream.ToArray();
+            }
+        using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream))
+        {
+            writer.Write((byte)1); writer.Write((byte)0); writer.Write((byte)1); writer.Write((byte)0);
+            writer.Write(declaredRaw ?? raw.Length); writer.Write(packed.Length); writer.Write(packed);
+            return stream.ToArray();
+        }
+    }
+    private static ProgressSnapshot RealLibrary()
+    {
+        var sample = Snapshot(); sample.CoreBooks.Clear();
+        var physical = new List<BookModel>();
+        for (var index = 0; index < 505; index++)
+        {
+            var book = Book(1000 + index); physical.Add(book);
+            var core = Core((ulong)(10 + index), book.instanceId); core.BookReference = book;
+            if (index == 0) { core.Flags = CoreBookFlags.Equipped; core.OccupiedFloorId = 1; core.OccupiedUnitIndex = 0; }
+            if (index < 1 || index > 77) core.CurrentCards.AddRange(new[] { 600, 601 });
+            // Repeated physical copies of the same vanilla XML retain separate
+            // tokens/instances. Every native empty slot remains in the snapshot.
+            for (var slot = 0; slot < 9; slot++)
+            {
+                var id = slot < 4 ? 10000 + index % 40 * 10 + slot : PassiveMirror.EmptyId;
+                var model = Model(id, book.instanceId, slot == 0 ? 3 : 0);
+                model.originpassive.rare = (byte)(slot == 0 ? 2 : 0);
+                if (slot >= 4) model.originpassive.CanGivePassive = false;
+                book.PassiveModels.Add(model);
+                if (id != PassiveMirror.EmptyId) core.Display.PassiveIds.Add(id);
+            }
+            sample.CoreBooks.Add(core);
+        }
+        // 77 committed donor books: 76 borrow one passive, one is attached with
+        // zero borrowed passives. The claimed target already has one donor.
+        for (var donorIndex = 1; donorIndex <= 77; donorIndex++)
+        {
+            var receiverIndex = donorIndex == 1 ? 0 : donorIndex + 76;
+            var donor = physical[donorIndex]; var receiver = physical[receiverIndex];
+            receiver.originData.equipedBookIdListInPassive.Add(donor.instanceId);
+            donor.originData.equipedPassiveBookInstanceId = receiver.instanceId;
+            sample.CoreBooks[donorIndex].Flags = CoreBookFlags.PassiveBound;
+            if (donorIndex == 77) continue;
+            var source = donor.PassiveModels[0]; source.originData.givePassiveBookId = receiver.instanceId;
+            // Vanilla commits a given donor's own current XML with zero cost and
+            // common rarity; its original source XML keeps the charged metadata.
+            source.originData.currentpassive = new PassiveXmlInfo { id = new LorId { id = source.originpassive.id.id },
+                cost = 0, rare = 0, isNegative = false };
+            receiver.PassiveModels[4].originData.currentpassive = source.originpassive;
+            receiver.PassiveModels[4].originData.receivepassivebookId = donor.instanceId;
+            sample.CoreBooks[receiverIndex].Display.PassiveIds.Add(source.originpassive.id.id);
+        }
+        for (var id = 102; id <= 211; id++) sample.Stages.Add(new ProgressSnapshot.StageEntry
+            { Id = id, Chapter = 7, State = StoryState.Open, Name = "Reception " + id });
+        // Match the observed 30,815-byte base packet without dropping any book,
+        // card, or passive. Only ordinary bounded stage display names are padded.
+        var missing = 30815 - sample.Encode(Room).Length;
+        foreach (var stage in sample.Stages)
+        {
+            if (missing <= 0) break;
+            var added = Math.Min(missing, 256 - stage.Name.Length); stage.Name += new string('x', added); missing -= added;
+        }
+        if (missing != 0) throw new Exception("Scale fixture could not reproduce the observed base length.");
+        return sample;
+    }
+    private static void RealLibraryScale()
+    {
+        var library = LibraryModel.Instance;
+        try
+        {
+            LibraryModel.Instance = new LibraryModel { Chapter = 7 };
+            var sample = RealLibrary(); var baseBytes = sample.Encode(Room).Length;
+            Check(baseBytes == 30815 && sample.CoreBooks.Count == 505 && sample.CoreBooks.Count(b => b.Flags == CoreBookFlags.PassiveBound) == 77,
+                "observed library scale includes complete 505 books and 77 donor instances");
+            PassiveMirror.Capture(sample);
+            Check(sample.PassivesAvailable && sample.PassivesReason == PassivesReason.None && sample.PassiveBooks.Count == 505,
+                "actual capture branch retains complete observed library passive pool");
+            var raw = PassiveMirror.EncodeContent(sample); var wire = PassiveMirror.EncodeWireData(sample); var packet = sample.Encode(Room);
+            Check(baseBytes + raw.Length - 6 > 65536, "observed scale reproduces former raw-wire overflow");
+            Check(packet.Length <= 65536 && wire.Length < raw.Length, "complete compressed passive pool fits transport bound");
+            Check(ProgressSnapshot.TryDecode(packet, Room, out var parsed), "full observed-scale packet round trip");
+            Check(parsed.CoreBooks.Count == 505 && parsed.PassiveBooks.Count == 505 && parsed.PassiveBooks.Sum(b => b.Slots.Count) == 4545 &&
+                parsed.PassiveBooks.All(b => b.Slots.Count == 9),
+                "scale decode keeps every native and empty slot rather than truncating rows");
+            Check(parsed.PassiveBooks.Count(b => b.ReceiverBookToken != 0) == 77 && parsed.PassiveBooks.Sum(b => b.Slots.Count(s => s.SourceBookToken != 0)) == 76,
+                "all committed donors and inherited slots survive compression");
+            var noBorrow = parsed.PassiveBooks.Find(b => b.BookToken == 87);
+            Check(noBorrow.ReceiverBookToken != 0 && noBorrow.Slots.All(s => (s.Flags & PassiveSlotFlags.Given) == 0) &&
+                parsed.PassiveBooks.Find(b => b.BookToken == noBorrow.ReceiverBookToken).SourceTokens.Contains(87), "zero borrowed committed source survives full-scale snapshot");
+            Check(raw.SequenceEqual(PassiveMirror.EncodeContent(parsed)), "raw canonical authority state is identical after compressed decode");
+            Check(NativePassiveDraft.TryCreate(Room, parsed, 0, 123, out var draft) && draft.CanEdit,
+                "claimed ordinary target can create editable full-scale native draft");
+            Check(draft.TryAttach(draft.CaptureEvent(), 310) && draft.TryInherit(draft.CaptureEvent(), 310, 0),
+                "new available source can be selected and inherited beside committed source");
+            var request = new PassiveRequest { RequestId = 20, StageId = parsed.SelectedStageId, FloorId = parsed.SelectedFloorId,
+                UnitIndex = 0, UnitIdentity = parsed.UnitDecks[0].UnitIdentity, BookToken = parsed.UnitDecks[0].BookToken,
+                ClaimRevision = parsed.ClaimRevision, DeckRevision = parsed.DeckRevision, Slots = draft.Selections(), SourceBookTokens = draft.Sources() };
+            Check(PassiveAuthority.Validate(parsed, 123, request) == PassiveResultCode.Accepted, "full-scale private draft submits valid complete source plan");
+            Check(!NativePassiveDraft.TryCreate(Room, parsed, 0, 456, out var readOnly) || !readOnly.CanEdit,
+                "compression never grants ownership to another viewer");
+            Check(sample.CoreBooks.All(core => ((BookModel)core.BookReference).PassiveModels.All(model => model.reservedData == null)),
+                "full-scale capture and request drafting leave all physical reserves untouched");
+            Console.WriteLine("Observed-scale snapshot: base=" + baseBytes + " B; raw passive=" + raw.Length + " B; compressed passive=" + wire.Length + " B; complete=" + packet.Length + " B.");
+        }
+        finally { LibraryModel.Instance = library; }
+    }
+    private static void CompressedBoundaries()
+    {
+        var sample = MetadataSample(); var packet = sample.Encode(Room);
+        var wire = PassiveMirror.EncodeWireData(sample); var prefix = packet.Take(packet.Length - wire.Length).ToArray();
+        var raw = PassiveMirror.EncodeContent(sample).Skip(4).ToArray();
+        Check(prefix.Concat(Compressed(raw)).SequenceEqual(packet), "test compressor reproduces actual wire section without using canonical header as wire");
+        var empty = new ProgressSnapshot { CoreBooksAvailable = true, CoreBooksReason = CoreBooksReason.None,
+            PassivesAvailable = true, PassivesReason = PassivesReason.None };
+        Check(BitConverter.ToInt32(PassiveMirror.EncodeWireData(empty), 4) == 2 && ProgressSnapshot.TryDecode(empty.Encode(Room), Room, out var emptyParsed) &&
+            emptyParsed.PassivesAvailable && emptyParsed.PassiveBooks.Count == 0, "minimum two-byte expanded complete empty inventory is accepted");
+        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, PassiveMirror.MaxExpandedBytes)).ToArray(), Room, out _, out var shortReason) &&
+            shortReason.Contains("truncated"), "maximum allowed expanded length remains bounded and rejects actual short stream");
+        var oldVersion = (byte[])packet.Clone(); oldVersion[4] = 6;
+        Check(!ProgressSnapshot.TryDecode(oldVersion, Room, out _), "previous uncompressed wire version is explicitly rejected");
+        foreach (var change in new[] { new[] { 0, 2 }, new[] { 1, 1 }, new[] { 2, 0 }, new[] { 2, 2 }, new[] { 3, 1 } })
+        {
+            var bad = (byte[])wire.Clone(); bad[change[0]] = (byte)change[1];
+            Check(!ProgressSnapshot.TryDecode(prefix.Concat(bad).ToArray(), Room, out _), "invalid compressed header at " + change[0] + ":" + change[1]);
+        }
+        foreach (var length in new[] { int.MinValue, -1, 0, 1, PassiveMirror.MaxExpandedBytes + 1, int.MaxValue })
+            Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, length)).ToArray(), Room, out _), "expanded length rejected before allocation " + length);
+        foreach (var length in new[] { int.MinValue, -1, 0, 65525, int.MaxValue })
+        {
+            var bad = (byte[])wire.Clone(); Array.Copy(BitConverter.GetBytes(length), 0, bad, 8, 4);
+            Check(!ProgressSnapshot.TryDecode(prefix.Concat(bad).ToArray(), Room, out _), "compressed length boundary " + length);
+        }
+        var packed = wire.Skip(12).ToArray();
+        for (var cut = 0; cut < packed.Length; cut++)
+            Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length, packed.Take(cut).ToArray())).ToArray(), Room, out _),
+                "forged shorter compressed length cannot hide missing stream end " + cut);
+        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length, new byte[] { 255, 255, 255, 255 })).ToArray(), Room, out _), "invalid Deflate stream rejected");
+        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length, packed.Concat(new byte[] { 0 }).ToArray())).ToArray(), Room, out _), "compressed trailing byte rejected");
+        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length, packed.Concat(packed).ToArray())).ToArray(), Room, out _), "concatenated compressed stream rejected");
+        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length - 1)).ToArray(), Room, out _), "extra expanded byte beyond declaration rejected");
+        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length + 1)).ToArray(), Room, out _), "short expanded stream below declaration rejected");
+        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(new byte[PassiveMirror.MaxExpandedBytes + 1], 2)).ToArray(), Room, out _),
+            "high compression expansion bomb rejected after declared two-byte bound");
+        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw.Concat(new byte[] { 0 }).ToArray())).ToArray(), Room, out _), "valid Deflate with trailing expanded field rejected");
+        Check(!ProgressSnapshot.TryDecode(new byte[65537], Room, out _), "true transport packet overflow remains rejected");
+        var library = LibraryModel.Instance;
+        try
+        {
+            LibraryModel.Instance = new LibraryModel { Chapter = 7 };
+            sample = Snapshot(); sample.CoreBooks.Clear(); uint random = 0x9137af2;
+            Func<uint> next = () => { random ^= random << 13; random ^= random >> 17; random ^= random << 5; return random; };
+            for (var b = 0; b < 220; b++)
+            {
+                var book = Book(1000 + b); var core = Core((ulong)(b == 0 ? 10 : 100 + b), book.instanceId); core.BookReference = book;
+                if (b == 0) { core.Flags = CoreBookFlags.Equipped; core.OccupiedFloorId = 1; core.OccupiedUnitIndex = 0; }
+                for (var s = 0; s < 64; s++)
+                {
+                    var model = Model((int)(next() % int.MaxValue) + 1, book.instanceId, (int)(next() % 1001));
+                    model.originpassive.InnerTypeId = (int)(next() % 1000001); model.originpassive.rare = (byte)(next() % 5);
+                    book.PassiveModels.Add(model);
+                }
+                sample.CoreBooks.Add(core);
+            }
+            PassiveMirror.Capture(sample);
+            Check(!sample.PassivesAvailable && sample.PassivesReason == PassivesReason.PacketLimit && sample.PassiveBooks.Count == 0 && sample.CoreBooks.Count == 220,
+                "truly oversized low-compression pool explicitly clears complete passive graph");
+            Check(ProgressSnapshot.TryDecode(sample.Encode(Room), Room, out var fallback) && fallback.CoreBooksAvailable && fallback.CoreBooks.Count == 220 &&
+                fallback.UnitDecks[0].Cards.Count == 1 && fallback.CardStock[0].Count == 8, "true compression overflow preserves all core/card authority data");
+        }
+        finally { LibraryModel.Instance = library; }
+    }
     private static void Capture()
     {
         var library = LibraryModel.Instance;
@@ -260,10 +439,10 @@ internal static class PassiveCodecChecks
                 sample.CoreBooks.Add(core);
             }
             PassiveMirror.Capture(sample);
-            Check(!sample.PassivesAvailable && sample.PassivesReason == PassivesReason.PacketLimit && sample.PassiveBooks.Count == 0 && sample.CoreBooksAvailable && sample.CoreBooks.Count == 100,
-                "passive packet overflow clears entire passive graph while retaining core inventory");
+            Check(sample.PassivesAvailable && sample.PassiveBooks.Count == 100 && sample.CoreBooks.Count == 100,
+                "large repeated original passives remain complete with compression");
             Check(ProgressSnapshot.TryDecode(sample.Encode(Room), Room, out var fallback) && fallback.UnitDecks[0].Cards.Count == 1 && fallback.CardStock[0].Count == 8,
-                "packet overflow retains legacy card authority fields");
+                "compressed large pool retains legacy card authority fields");
             sample = Snapshot(); sample.CoreBooks.Clear(); sample.CoreBooksAvailable = false; sample.CoreBooksReason = CoreBooksReason.PacketLimit;
             PassiveMirror.Capture(sample); Check(!sample.PassivesAvailable && sample.PassivesReason == PassivesReason.CoreInventoryUnavailable, "missing core inventory explicit passive status");
         }
