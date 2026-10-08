@@ -64,7 +64,8 @@ foreach ($type in @('UI.UIInvenEquipPageSlot', 'UI.UIInvenLeftEquipPageSlot')) {
     Add-EquipmentTarget $type 'SetOperatingPanel' @() 'OperatingPrefix'
     Add-EquipmentTarget $type 'SetActiveOperatinPanel' @('System.Boolean') 'OperatingVisibilityPrefix'
     Add-EquipmentTarget $type 'OnPointerClick' @('UnityEngine.EventSystems.BaseEventData') 'SlotClickPrefix'
-    foreach ($method in @('OnClickPassiveSuccessionButton', 'OnClickRelaseButton', 'OnClickBookMarkButton')) {
+    Add-EquipmentTarget $type 'OnClickPassiveSuccessionButton' @() 'PassiveSlotPrefix'
+    foreach ($method in @('OnClickRelaseButton', 'OnClickBookMarkButton')) {
         Add-EquipmentTarget $type $method @() 'UnsafeSlotPrefix'
     }
 }

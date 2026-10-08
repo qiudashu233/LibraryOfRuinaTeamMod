@@ -193,7 +193,8 @@ namespace RuinaCoop
                 Patch(harmony, type, "SetOperatingPanel", "OperatingPrefix");
                 Patch(harmony, type, "SetActiveOperatinPanel", "OperatingVisibilityPrefix", typeof(bool));
                 Patch(harmony, type, "OnPointerClick", "SlotClickPrefix", pointer);
-                foreach (var method in new[] { "OnClickPassiveSuccessionButton", "OnClickRelaseButton", "OnClickBookMarkButton" })
+                Patch(harmony, type, "OnClickPassiveSuccessionButton", "PassiveSlotPrefix");
+                foreach (var method in new[] { "OnClickRelaseButton", "OnClickBookMarkButton" })
                     Patch(harmony, type, method, "UnsafeSlotPrefix");
             }
             var rect = typeof(RectTransform);
@@ -220,7 +221,7 @@ namespace RuinaCoop
 
         internal static bool TryOpen()
         {
-            if (!NativeDeckEditor.Active || !NativeDeckEditor.Session.IsReadyForDeck) return false;
+            if (!NativeDeckEditor.Active || NativePassiveEditor.Active || !NativeDeckEditor.Session.IsReadyForDeck) return false;
             var snapshot = NativeDeckEditor.Snapshot;
             if (!snapshot.CoreBooksAvailable || snapshot.CoreBooks.Count == 0)
             { Status = "房主核心书页库存暂不可用：" + snapshot.CoreBooksReason; return false; }
@@ -421,8 +422,26 @@ namespace RuinaCoop
                 NativeDeckEditor.Session.DeckRequestPending, bound);
             var enabled = reason == null;
             SetVisible(button, true);
-            SetInteractable(button, enabled);
+            SetInteractable(button, enabled && !NativePassiveEditor.Active);
             SetProperty(NativeUi.Get(__instance, "txt_equipButton"), "text", enabled ? "更换核心书页" : reason);
+            var passiveButton = NativeUi.Get(__instance, "button_PassiveSuccession");
+            var current = NativeDeckEditor.Snapshot.UnitDecks[NativeDeckEditor.UnitIndex];
+            var ownCurrent = bound && entry != null && entry.BookToken == current.BookToken;
+            SetVisible(passiveButton, ownCurrent);
+            SetInteractable(passiveButton, ownCurrent && !NativePassiveEditor.Active && !NativeDeckEditor.Session.DeckRequestPending);
+            return false;
+        }
+
+        private static bool PassiveSlotPrefix(object __instance)
+        {
+            var book = NativeUi.Get(__instance, "_bookDataModel") as BookModel;
+            if (!Active) return !NativeDeckModels.IsMirrorBook(book);
+            ProgressSnapshot.CoreBookEntry entry;
+            SlotBinding binding;
+            if (!NativePassiveEditor.Active && Slots.TryGetValue(__instance, out binding) &&
+                ReferenceEquals(book, binding.Book) && Entries.TryGetValue(book, out entry) &&
+                entry.BookToken == NativeDeckEditor.Snapshot.UnitDecks[NativeDeckEditor.UnitIndex].BookToken)
+                NativePassiveEditor.TryOpen();
             return false;
         }
 
@@ -451,7 +470,7 @@ namespace RuinaCoop
             var book = NativeUi.Get(__instance, "_bookDataModel") as BookModel;
             if (!Active) return !NativeDeckModels.IsMirrorBook(book);
             SlotBinding binding;
-            if (!_refreshing && Slots.TryGetValue(__instance, out binding) && ReferenceEquals(book, binding.Book))
+            if (!NativePassiveEditor.Active && !_refreshing && Slots.TryGetValue(__instance, out binding) && ReferenceEquals(book, binding.Book))
                 NativeUi.Call(_panel, "OnClickSlot", __instance);
             return false;
         }
@@ -465,7 +484,7 @@ namespace RuinaCoop
                 SlotBinding binding;
                 CorePageClickToken pressed;
                 var selectable = NativeUi.Get(NativeUi.Get(slot, "button_Equip"), "selectable");
-                if (Convert.ToInt32(NativeUi.Get(NativeUi.Singleton("UI.UIController"), "CurrentUIPhase")) != 8 ||
+                if (NativePassiveEditor.Active || Convert.ToInt32(NativeUi.Get(NativeUi.Singleton("UI.UIController"), "CurrentUIPhase")) != 8 ||
                     !Slots.TryGetValue(slot, out binding) || !ReferenceEquals(book, binding.Book) ||
                     !NativeDeckEditor.CanEdit || !Presses.TryConsume(selectable, NativeDeckEditor.Snapshot, NativeDeckEditor.UnitIndex,
                         SteamClient.SteamId.Value, Active, NativeDeckEditor.ReadyForInput, NativeDeckEditor.Session.DeckRequestPending,

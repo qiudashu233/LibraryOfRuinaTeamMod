@@ -69,7 +69,7 @@ internal static class EquipmentCodecChecks
         var original = Snapshot();
         original.CoreBooks[1].BookReference = new object();
         var packet = original.Encode(Room);
-        Check(packet[4] == 5, "snapshot wire version five");
+        Check(packet[4] == 6, "snapshot wire version six");
         var decoded = Decode(packet, "complete core inventory");
         Check(decoded.CoreBooksAvailable && decoded.CoreBooksReason == CoreBooksReason.None, "availability round trip");
         Check(decoded.UnitDecks[0].BookToken == 400 && decoded.CoreBooks.Count == 2, "current and inventory tokens round trip");
@@ -109,7 +109,7 @@ internal static class EquipmentCodecChecks
         using (var stream = new MemoryStream(packet))
         using (var reader = new BinaryReader(stream))
         {
-            stream.Position = packet.Length - EquipmentMirror.EncodeContent(value).Length;
+            stream.Position = packet.Length - EquipmentMirror.EncodeContent(value).Length - PassiveMirror.EncodeContent(value).Length;
             fields["available"] = (int)stream.Position; reader.ReadByte();
             fields["reason"] = (int)stream.Position; reader.ReadByte();
             fields["currentCount"] = (int)stream.Position; var currentCount = reader.ReadByte();
@@ -139,7 +139,7 @@ internal static class EquipmentCodecChecks
                 for (var c = 0; c < cards; c++)
                 { fields[prefix + "card" + c] = (int)stream.Position; reader.ReadInt32(); }
             }
-            Check(stream.Position == packet.Length, "core extension offsets consume exact wire payload");
+            Check(stream.Position == packet.Length - PassiveMirror.EncodeContent(value).Length, "core extension offsets consume exact wire payload");
         }
         return fields;
     }
@@ -194,7 +194,7 @@ internal static class EquipmentCodecChecks
         for (var length = 0; length < packet.Length; length++) BadPacket(packet.Take(length).ToArray(), "truncated core packet " + length);
         BadPacket(packet.Concat(new byte[] { 0 }).ToArray(), "trailing payload rejected");
         BadPacket(new byte[65537], "over 64KiB packet rejected");
-        var oldWire = (byte[])packet.Clone(); oldWire[4] = 4; BadPacket(oldWire, "old wire explicitly rejected");
+        var oldWire = (byte[])packet.Clone(); oldWire[4] = 5; BadPacket(oldWire, "old wire explicitly rejected");
         BadDto(s => s.CoreBooks[1].BookToken = 400, "encoder duplicate token");
         BadDto(s => s.CoreBooks[1].Kind = (CoreBookKind)255, "encoder unknown kind");
         BadDto(s => s.CoreBooks[1].Flags = (CoreBookFlags)0x8000, "encoder unknown flags");

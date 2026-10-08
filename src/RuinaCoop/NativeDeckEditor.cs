@@ -75,7 +75,7 @@ namespace RuinaCoop
             Patch(harmony, "UI.UIInvenCardSlot", "OnClickCardEquipInfoButton", new string[0], "UnsafePrefix");
             Patch(harmony, "UI.UICardEquipInfoPanel", "OpenCardEquipInfo", new[] { "DiceCardItemModel", "System.Boolean" }, "UnsafePrefix");
             Patch(harmony, "UI.UILibrarianInfoInCardPhase", "OnClickReleaseToggle", new string[0], "UnsafePrefix");
-            Patch(harmony, "UI.UILibrarianInfoInCardPhase", "OnPointerClickPassiveSlot", new[] { "UnityEngine.EventSystems.BaseEventData" }, "UnsafePrefix");
+            Patch(harmony, "UI.UILibrarianInfoInCardPhase", "OnPointerClickPassiveSlot", new[] { "UnityEngine.EventSystems.BaseEventData" }, "PassiveClickPrefix");
             Patch(harmony, "UI.UILibrarianInfoInCardPhase", "OnPointerClickEquipPage", new[] { "UnityEngine.EventSystems.BaseEventData" }, "CorePageClickPrefix");
         }
 
@@ -120,6 +120,7 @@ namespace RuinaCoop
             { Close(); return; }
             if (!ReferenceEquals(oldSnapshot, _binding.Snapshot))
             { _dirty = true; _renderDirty |= !SameAppearance(oldSnapshot, _binding.Snapshot); }
+            NativePassiveEditor.Tick();
             if (!_dirty) return;
             try
             {
@@ -196,6 +197,7 @@ namespace RuinaCoop
                 if (!string.IsNullOrEmpty(_status)) GUILayout.Label(_status);
                 if (Active) GUILayout.Label(session.DeckStatus);
                 if (Active && !string.IsNullOrEmpty(NativeEquipmentEditor.Status)) GUILayout.Label(NativeEquipmentEditor.Status);
+                if (Active && !string.IsNullOrEmpty(NativePassiveEditor.Status)) GUILayout.Label(NativePassiveEditor.Status);
                 _rosterScroll = GUILayout.BeginScrollView(_rosterScroll, GUILayout.Height(210));
                 for (byte i = 0; i < snapshot.UnitDecks.Count; i++)
                 {
@@ -203,19 +205,21 @@ namespace RuinaCoop
                     var mine = owner == SteamClient.SteamId.Value;
                     GUILayout.BeginHorizontal();
                     GUILayout.Label(floor.Units[i] + (mine ? " · 我" : owner == 0 ? " · 未认领" : " · 已认领"), GUILayout.Width(155));
-                    GUI.enabled = session.IsReadyForDeck && !session.PreparationFrozen;
+                    GUI.enabled = session.IsReadyForDeck && !session.PreparationFrozen && !NativePassiveEditor.Active;
                     if (GUILayout.Button(mine ? "编辑角色卡组" : "查看卡组", GUILayout.Width(105)))
                     {
                         if (Active) Select(i); else Open(session, snapshot, i);
                     }
-                    GUI.enabled = session.IsReadyForDeck && !session.DeckRequestPending && !snapshot.DecksFrozen && (mine || owner == 0);
+                    GUI.enabled = session.IsReadyForDeck && !session.DeckRequestPending && !snapshot.DecksFrozen && !NativePassiveEditor.Active && (mine || owner == 0);
                     if (GUILayout.Button(mine ? "释放" : "认领", GUILayout.Width(55)))
                         session.RequestClaim(snapshot, i, mine ? ClaimAction.Release : ClaimAction.Claim);
                     GUILayout.EndHorizontal();
                 }
                 GUILayout.EndScrollView();
-                GUI.enabled = true;
+                GUI.enabled = !NativePassiveEditor.Active;
                 if (Active && GUILayout.Button("查看/更换核心书页")) NativeEquipmentEditor.TryOpen();
+                if (Active && GUILayout.Button("查看/编辑被动")) NativePassiveEditor.TryOpen();
+                GUI.enabled = true;
                 if (Active && GUILayout.Button("返回准备")) Close();
             }
             finally { GUI.enabled = previousEnabled; GUILayout.EndArea(); }
@@ -266,7 +270,7 @@ namespace RuinaCoop
 
         private static void Select(byte index)
         {
-            if (!Active || !_binding.TrySelectUnit(index)) return;
+            if (!Active || NativePassiveEditor.Active || !_binding.TrySelectUnit(index)) return;
             NativeUi.Set(_uiData, "unit", Current);
             _dirty = true;
         }
@@ -279,7 +283,7 @@ namespace RuinaCoop
                 name != "InsertCardSlot" && name != "RemoveCardSlot") return false;
             try
             {
-                if (_dirty || !ReferenceEquals(NativeUi.Get(instance, "currentunit"), Current) ||
+                if (NativePassiveEditor.Active || _dirty || !ReferenceEquals(NativeUi.Get(instance, "currentunit"), Current) ||
                     args == null || args.Length != 1 || args[0] == null) return true;
                 var card = NativeUi.Get(args[0], "CardModel") as DiceCardItemModel;
                 if (card == null || !card.GetID().IsBasic()) return true;
@@ -399,6 +403,12 @@ namespace RuinaCoop
             NativeEquipmentEditor.TryOpen();
             return false;
         }
+        private static bool PassiveClickPrefix()
+        {
+            if (!Active) return true;
+            NativePassiveEditor.TryOpen();
+            return false;
+        }
         private static bool UnsafePrefix() { return !Active; }
         private static bool FalseInNativePrefix(ref bool __result) { if (!Active) return true; __result = false; return false; }
         private static bool MirrorUnlockedPrefix(UnitDataModel __instance, ref bool __result)
@@ -426,7 +436,7 @@ namespace RuinaCoop
             var display = _binding.Snapshot.UnitDecks[_binding.UnitIndex].Display;
             Visibility(NativeUi.Get(__instance, "portrait"), display.AppearanceAvailable);
             Visibility(NativeUi.Get(__instance, "passiveSlotsPanel"), display.Available);
-            NativeUi.Set(__instance, "isDisabledPassiveSuccession", true);
+            NativeUi.Set(__instance, "isDisabledPassiveSuccession", false);
             var stats = NativeUi.Get(__instance, "StatsInfo");
             foreach (var name in new[] { "emotionText", "speedDiceText", "speedDiceNumText", "playpointText", "resistSlash", "resistPentrate", "resistHit", "resistBreakSlash", "resistBreakPentrate", "resistBreakHit" })
                 NativeUi.Set(NativeUi.Get(stats, name), "text", "—");
@@ -521,6 +531,7 @@ namespace RuinaCoop
             try
             {
                 if (_session != null) _session.DeckStateChanged -= Changed;
+                NativePassiveEditor.Close();
                 NativeEquipmentEditor.Close();
                 // A vanilla OnClose may save the host library. Restore these
                 // flags before triggering any original panel transition.

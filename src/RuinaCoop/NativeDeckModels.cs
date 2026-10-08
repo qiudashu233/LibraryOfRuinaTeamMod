@@ -31,6 +31,10 @@ namespace RuinaCoop
         internal static bool IsMirrorBook(BookModel book) { object mark; return book != null && MirrorBooks.TryGetValue(book, out mark); }
         internal static bool IsMirrorDeck(DeckModel deck) { object mark; return deck != null && MirrorDecks.TryGetValue(deck, out mark); }
 
+        // A modal editor owns an independent mirror collection and can release
+        // its strong references without disposing the parent card/core view.
+        internal NativeDeckModels() { }
+
         internal NativeDeckModels(ProgressSnapshot snapshot)
         {
             try

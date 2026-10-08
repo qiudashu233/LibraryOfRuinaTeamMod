@@ -18,10 +18,15 @@ namespace RuinaCoop
         OwnerMismatch = 256, UnsupportedCards = 512, UnsupportedDisplay = 1024, DraftMismatch = 2048
     }
 
+    internal enum PassivesReason : byte
+    { None = 0, NotCaptured = 1, TooManySlots = 2, PacketLimit = 3, CaptureFailed = 4, UnsupportedData = 5, CoreInventoryUnavailable = 6 }
+    [Flags] internal enum PassiveBookFlags : byte { None = 0, ReceiverAllowed = 1, SourceAllowed = 2, Unsupported = 4 }
+    [Flags] internal enum PassiveSlotFlags : byte
+    { None = 0, CanGive = 1, Locked = 2, Negative = 4, Hidden = 8, CanReceive = 16, Given = 32 }
     internal sealed class ProgressSnapshot
     {
         private const uint Magic = 0x52435053;
-        private const byte WireVersion = 5;
+        private const byte WireVersion = 6;
         private const int MaxPacketBytes = 65536;
         private const int MaxStages = 512;
         private const int MaxFloors = 12;
@@ -39,6 +44,9 @@ namespace RuinaCoop
         internal bool CoreBooksAvailable;
         internal CoreBooksReason CoreBooksReason = RuinaCoop.CoreBooksReason.NotCaptured;
         internal readonly List<CoreBookEntry> CoreBooks = new List<CoreBookEntry>();
+        internal bool PassivesAvailable;
+        internal PassivesReason PassivesReason = RuinaCoop.PassivesReason.NotCaptured;
+        internal readonly List<PassiveBookEntry> PassiveBooks = new List<PassiveBookEntry>();
         internal readonly List<UnitDeckEntry> UnitDecks = new List<UnitDeckEntry>();
         internal readonly List<CardStockEntry> CardStock = new List<CardStockEntry>();
         internal readonly List<ulong> ClaimOwners = new List<ulong>();
@@ -104,6 +112,30 @@ namespace RuinaCoop
             [NonSerialized] internal object BookReference;
         }
 
+        internal sealed class PassiveBookEntry
+        {
+            internal ulong BookToken;
+            internal PassiveBookFlags Flags;
+            internal int MaxCost;
+            internal byte MaxSources = 4;
+            internal ulong ReceiverBookToken;
+            internal readonly List<ulong> SourceTokens = new List<ulong>();
+            internal readonly List<PassiveSlotEntry> Slots = new List<PassiveSlotEntry>();
+        }
+        internal sealed class PassiveSlotEntry
+        {
+            internal int OriginId;
+            internal int CurrentId;
+            internal int Cost;
+            internal int CurrentCost;
+            internal int InnerTypeId = -1;
+            internal PassiveSlotFlags Flags;
+            internal byte OriginRarity;
+            internal byte CurrentRarity;
+            internal bool CurrentNegative;
+            internal ulong SourceBookToken;
+            internal byte SourceSlotIndex = byte.MaxValue;
+        }
         internal sealed class CardStockEntry
         {
             internal int Id;
@@ -253,6 +285,7 @@ namespace RuinaCoop
                 writer.Write(DeckRevision);
                 DeckMirror.WriteData(writer, this, false);
                 EquipmentMirror.WriteData(writer, this, false);
+                PassiveMirror.WriteData(writer, this, false);
                 writer.Flush();
                 if (stream.Length > MaxPacketBytes)
                 {
@@ -273,7 +306,7 @@ namespace RuinaCoop
         {
             snapshot = null;
             reason = null;
-            if (packet == null || packet.Length > MaxPacketBytes || packet.Length < 52)
+            if (packet == null || packet.Length > MaxPacketBytes || packet.Length < 58)
             {
                 return Reject(out reason, "Packet size is invalid.");
             }
@@ -382,6 +415,7 @@ namespace RuinaCoop
                         return false;
                     }
                     if (!EquipmentMirror.TryReadData(reader, result, out reason)) return false;
+                    if (!PassiveMirror.TryReadData(reader, result, out reason)) return false;
                     if (stream.Position != stream.Length)
                     {
                         return Reject(out reason, "Packet has trailing bytes.");

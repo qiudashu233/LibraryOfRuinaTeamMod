@@ -35,7 +35,8 @@ namespace RuinaCoop
         private List<LibraryFloorModel> _floorList;
         internal LibraryModel() { _floorList = OpenedFloors; }
         internal List<LibraryFloorModel> GetOpenedFloorList() => OpenedFloors;
-        internal int GetChapter() => 0;
+        internal int Chapter;
+        internal int GetChapter() => Chapter;
         internal int GetLibraryLevel() => 0;
     }
 
@@ -61,7 +62,8 @@ namespace RuinaCoop
         internal UnityEngine.Color skinColor = new UnityEngine.Color(1, 1, 1);
     }
 
-    internal sealed class PassiveXmlInfo { internal LorId id; internal bool isNegative; internal byte rare; }
+    internal sealed class PassiveXmlInfo
+    { internal LorId id; internal bool isNegative, isHide, isLock; internal bool CanGivePassive = true, CanReceivePassive = true; internal byte rare; internal int cost, InnerTypeId = -1; }
     internal sealed class BookPassiveInfo { internal PassiveXmlInfo passive; }
     internal sealed class PassiveModel
     {
@@ -70,6 +72,7 @@ namespace RuinaCoop
             internal PassiveXmlInfo currentpassive;
             internal int receivepassivebookId = -1, givePassiveBookId = -1;
         }
+        internal PassiveXmlInfo originpassive;
         internal PassiveModelSavedData originData;
         internal PassiveModelSavedData reservedData;
         // Match the real game's lazy reserve lifecycle, including save-loader ctor.
@@ -82,6 +85,7 @@ namespace RuinaCoop
                 currentpassive = new PassiveXmlInfo { id = slot == 0 ? id : new LorId { id = 9999999 } },
                 receivepassivebookId = instance, givePassiveBookId = instance
             };
+            originpassive = originData.currentpassive;
         }
         internal void InitReservedData()
         {
@@ -115,7 +119,7 @@ namespace RuinaCoop
         internal bool IsChangeItemLock() => Locked;
     }
 
-    internal sealed class BookXmlInfo { internal bool canNotEquip; }
+    internal sealed class BookXmlInfo { internal bool canNotEquip, isError; }
 
     internal sealed class BookInventoryModel
     {
@@ -156,6 +160,7 @@ namespace RuinaCoop
         internal bool IsLockByBluePrimary() => BlueLocked;
         internal readonly List<PassiveModel> PassiveModels = new List<PassiveModel>();
         internal List<PassiveModel> GetPassiveModelList() => PassiveModels;
+        internal int GetMaxPassiveCost() { var chapter = LibraryModel.Instance.GetChapter(); return chapter <= 3 ? 0 : chapter == 4 ? 6 : chapter == 5 ? 8 : chapter == 6 ? 10 : 12; }
         internal int GetDeckSize() => DeckSize;
         internal bool IsFixedDeck() => Fixed;
         internal bool IsMultiDeck() => MultiDeck;

@@ -255,9 +255,8 @@ foreach ($name in @('OnClickSaveDeckButton', 'OnClickOpenDeckListButton', 'OnCli
 Add-NativeTarget 'UI.UIInvenCardSlot' 'OnClickCardEquipInfoButton' @() 'UnsafePrefix'
 Add-NativeTarget 'UI.UICardEquipInfoPanel' 'OpenCardEquipInfo' @('DiceCardItemModel', 'System.Boolean') 'UnsafePrefix'
 Add-NativeTarget 'UI.UILibrarianInfoInCardPhase' 'OnClickReleaseToggle' @() 'UnsafePrefix'
-foreach ($name in @('OnPointerClickPassiveSlot', 'OnPointerClickEquipPage')) {
-    Add-NativeTarget 'UI.UILibrarianInfoInCardPhase' $name @('UnityEngine.EventSystems.BaseEventData') 'UnsafePrefix'
-}
+Add-NativeTarget 'UI.UILibrarianInfoInCardPhase' 'OnPointerClickPassiveSlot' @('UnityEngine.EventSystems.BaseEventData') 'PassiveClickPrefix'
+Add-NativeTarget 'UI.UILibrarianInfoInCardPhase' 'OnPointerClickEquipPage' @('UnityEngine.EventSystems.BaseEventData') 'CorePageClickPrefix'
 foreach ($spec in $nativeTargets) {
     $type = Resolve-NativeType $spec.TypeName
     $parameters = [type[]]@(foreach ($name in $spec.Parameters) { Resolve-NativeType $name })

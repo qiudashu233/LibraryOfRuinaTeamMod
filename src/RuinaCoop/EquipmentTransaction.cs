@@ -63,7 +63,7 @@ namespace RuinaCoop
             return CanUseTarget(target, out reason);
         }
 
-        private static bool IsOrdinaryBook(BookModel book, bool allowDefault, out string reason)
+        internal static bool IsOrdinaryBook(BookModel book, bool allowDefault, out string reason)
         {
             reason = "";
             var id = book == null ? null : book.BookId;
@@ -214,7 +214,7 @@ namespace RuinaCoop
 
         private static bool Reject(string message, out string reason) { reason = message; return false; }
 
-        private sealed class EditState
+        internal sealed class EditState
         {
             private readonly UnitDataModel _unit;
             private readonly BookModel _rawBook;
@@ -229,7 +229,7 @@ namespace RuinaCoop
             private readonly List<BookModel> _originalBooks;
             private readonly List<BookState> _bookStates = new List<BookState>();
 
-            internal EditState(UnitDataModel unit, BookModel target)
+            internal EditState(UnitDataModel unit, BookModel target, IEnumerable<BookModel> additional = null)
             {
                 _unit = unit;
                 _rawBook = UnitBook.GetValue(unit) as BookModel;
@@ -247,6 +247,7 @@ namespace RuinaCoop
                 AddBook(unit.bookItem);
                 AddBook(target);
                 AddBook(_appearanceBook);
+                if (additional != null) foreach (var book in additional) AddBook(book);
             }
 
             private void AddBook(BookModel book)
@@ -292,6 +293,24 @@ namespace RuinaCoop
                     if (!state.CheckStructure() || !state.CheckOwner(ReferenceEquals(state.Book, target) ? _unit :
                         ReferenceEquals(state.Book, _rawBook) ? null : state.OriginalOwner)) return false;
                 return true;
+            }
+
+            internal bool CheckOriginalBindings()
+            {
+                if (!ReferenceEquals(UnitBook.GetValue(_unit), _rawBook) ||
+                    !ReferenceEquals(UnitAppearanceBook.GetValue(_unit), _appearanceBook) || _unit.appearanceType != _appearance ||
+                    !ReferenceEquals(InventoryCards.GetValue(_inventory), _cards) ||
+                    !ReferenceEquals(InventoryBooks.GetValue(_bookInventory), _books) || _books.Count != _originalBooks.Count) return false;
+                for (var i = 0; i < _books.Count; i++) if (!ReferenceEquals(_books[i], _originalBooks[i])) return false;
+                foreach (var state in _bookStates)
+                    if (!state.CheckStructure() || !state.CheckOwner(state.OriginalOwner)) return false;
+                return true;
+            }
+
+            internal bool CheckDeckContents(BookModel book)
+            {
+                var state = _bookStates.Find(value => ReferenceEquals(value.Book, book));
+                return state != null && state.CheckContents();
             }
 
             internal void Restore()
@@ -359,13 +378,20 @@ namespace RuinaCoop
             internal bool CheckStructure()
             {
                 if (Book.instanceId != _instanceId || !ReferenceEquals(BookDeck.GetValue(Book), _current) ||
-                    !ReferenceEquals(BookDecks.GetValue(Book), _decks) || _decks.Count != _originalDecks.Count)
+                    !ReferenceEquals(BookDecks.GetValue(Book), _decks) || _decks.Count != _originalDecks.Count ||
+                    !ReferenceEquals(_activeField.GetValue(Book), _active) || _active.Count != _originalActive.Count)
                     return false;
                 for (var i = 0; i < _decks.Count; i++) if (!ReferenceEquals(_decks[i], _originalDecks[i])) return false;
+                for (var i = 0; i < _active.Count; i++) if (!ReferenceEquals(_active[i], _originalActive[i])) return false;
                 foreach (var state in _states) if (!state.SameList()) return false;
                 return true;
             }
             internal bool CheckOwner(UnitDataModel expected) { return ReferenceEquals(Book.owner, expected); }
+            internal bool CheckContents()
+            {
+                foreach (var state in _states) if (!state.SameContents()) return false;
+                return true;
+            }
             internal void Restore()
             {
                 Book.owner = _owner;
@@ -456,6 +482,12 @@ namespace RuinaCoop
                 _original = new List<DiceCardXmlInfo>(_list);
             }
             internal bool SameList() { return ReferenceEquals(DeckCards.GetValue(Deck), _list); }
+            internal bool SameContents()
+            {
+                if (!SameList() || _list.Count != _original.Count) return false;
+                for (var i = 0; i < _list.Count; i++) if (!ReferenceEquals(_list[i], _original[i])) return false;
+                return true;
+            }
             internal void Restore() { DeckCards.SetValue(Deck, _list); _list.Clear(); _list.AddRange(_original); }
         }
     }

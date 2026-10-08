@@ -76,8 +76,8 @@ internal static class DisplayChecks
     {
         var snapshot = Sample();
         var bytes = snapshot.Encode(room);
-        Check(bytes[4] == 5, "wire5 tag");
-        Check(ProgressSnapshot.TryDecode(bytes, room, out var parsed), "wire5 round trip");
+        Check(bytes[4] == 6, "wire6 tag");
+        Check(ProgressSnapshot.TryDecode(bytes, room, out var parsed), "wire6 round trip");
         var deck = parsed.UnitDecks[0];
         var display = deck.Display;
         Check(deck.UnitIdentity == 100 && parsed.UnitDecks[1].UnitIdentity == 101 &&

@@ -30,6 +30,12 @@ namespace RuinaCoop
             internal CorePageRequest Request;
             internal CorePageReply Reply;
         }
+        private readonly Dictionary<ulong, PassiveReceipt> _passiveReceipts = new Dictionary<ulong, PassiveReceipt>();
+        private sealed class PassiveReceipt
+        {
+            internal PassiveRequest Request;
+            internal PassiveReply Reply;
+        }
         private readonly PrepClaims _claims = new PrepClaims();
         private readonly Dictionary<uint, PendingGuest> _pendingGuests = new Dictionary<uint, PendingGuest>();
         private sealed class PendingGuest
@@ -63,6 +69,10 @@ namespace RuinaCoop
         private uint _lastCorePageReply;
         private uint _pendingCorePageRequest;
         private CorePageReply? _deferredCorePageReply;
+        private uint _nextPassiveRequest;
+        private uint _lastPassiveReply;
+        private uint _pendingPassiveRequest;
+        private PassiveReply? _deferredPassiveReply;
         private readonly Dictionary<ulong, float> _nextDeckRequestTime = new Dictionary<ulong, float>();
         private readonly HashSet<uint> _snapshotRetries = new HashSet<uint>();
 
@@ -90,7 +100,7 @@ namespace RuinaCoop
             get { return !_stopped && (_isHost || _guestAuthenticated && _guestConnection != null); }
         }
         internal bool IsGuestSession { get { return !_stopped && !_isHost; } }
-        internal bool DeckRequestPending { get { return _pendingDeckRequest != 0 || _pendingCorePageRequest != 0; } }
+        internal bool DeckRequestPending { get { return _pendingDeckRequest != 0 || _pendingCorePageRequest != 0 || _pendingPassiveRequest != 0; } }
 
         private void NotifyDeckStateChanged()
         {
@@ -586,6 +596,74 @@ namespace RuinaCoop
             return "Core page edit: " + result + ".";
         }
 
+        internal bool RequestPassiveEdit(ProgressSnapshot expected, byte unitIndex, PassiveSelection[] selections, ulong[] sourceBookTokens)
+        {
+            if (!ValidateDisplayedDeckRequest(expected) || unitIndex >= expected.UnitDecks.Count || selections == null || sourceBookTokens == null)
+                return false;
+            var unit = expected.UnitDecks[unitIndex];
+            var request = new PassiveRequest
+            {
+                RequestId = ++_nextPassiveRequest, StageId = expected.SelectedStageId,
+                FloorId = expected.SelectedFloorId, UnitIndex = unitIndex,
+                UnitIdentity = unit.UnitIdentity, BookToken = unit.BookToken,
+                ClaimRevision = expected.ClaimRevision, DeckRevision = expected.DeckRevision,
+                Slots = (PassiveSelection[])selections.Clone(), SourceBookTokens = (ulong[])sourceBookTokens.Clone()
+            };
+            if (_isHost)
+            {
+                var result = ApplyPassiveRequest(_hostId.Value, request);
+                DeckStatus = PassiveResultText(result);
+                return result == PassiveResultCode.Accepted;
+            }
+            if (!_guestAuthenticated || _guestConnection == null)
+            {
+                DeckStatus = "Waiting for host room verification.";
+                return false;
+            }
+            var permission = PassiveAuthority.Validate(expected, SteamClient.SteamId.Value, request);
+            if (permission != PassiveResultCode.Accepted)
+            {
+                DeckStatus = PassiveResultText(permission);
+                return false;
+            }
+            var send = _guestConnection.Connection.SendMessage(
+                PassiveProtocol.EncodeRequest(_room.Id.Value, request), SendType.Reliable);
+            if (send == Steamworks.Result.OK)
+            {
+                _pendingPassiveRequest = request.RequestId;
+                _deckRequestDeadline = Time.realtimeSinceStartup + 10f;
+            }
+            DeckStatus = send == Steamworks.Result.OK
+                ? "被动方案已发送，等待房主确认。"
+                : "被动方案发送失败：" + send + ".";
+            return send == Steamworks.Result.OK;
+        }
+
+        private PassiveResultCode ApplyPassiveRequest(ulong sender, PassiveRequest request)
+        {
+            if (!_isHost) return PassiveResultCode.NotReady;
+            if (PreparationFrozen) return PassiveResultCode.Frozen;
+            if (!CaptureAndBroadcast()) return PassiveResultCode.NotReady;
+            var snapshot = LatestSnapshot;
+            var permission = PassiveAuthority.Validate(snapshot, sender, request);
+            if (permission != PassiveResultCode.Accepted) return permission;
+            var floor = snapshot.Floors.Find(candidate => (byte)candidate.Sephirah == snapshot.SelectedFloorId);
+            var unit = floor == null || request.UnitIndex >= floor.UnitReferences.Count
+                ? null : floor.UnitReferences[request.UnitIndex] as UnitDataModel;
+            if (unit == null) return PassiveResultCode.NotReady;
+            string reason;
+            var result = PassiveTransaction.Apply(unit, snapshot, request, CapturePassivesAndBroadcast, out reason);
+            if (result != EquipmentTransactionResult.Accepted)
+                Debug.LogWarning("[RuinaCoop] Passive transaction: " + reason);
+            return result == EquipmentTransactionResult.Accepted ? PassiveResultCode.Accepted :
+                result == EquipmentTransactionResult.Rejected ? PassiveResultCode.VanillaRejected : PassiveResultCode.Failed;
+        }
+
+        private static string PassiveResultText(PassiveResultCode result)
+        {
+            return "被动方案：" + result + ".";
+        }
+
         internal void ReleaseAbsentClaims()
         {
             if (_isHost && !PreparationFrozen && _claims.ReleaseAbsent(id =>
@@ -625,6 +703,8 @@ namespace RuinaCoop
             _deferredDeckReply = null;
             _pendingCorePageRequest = 0;
             _deferredCorePageReply = null;
+            _pendingPassiveRequest = 0;
+            _deferredPassiveReply = null;
             DeckStatus = "Room session closed.";
             if (ReferenceEquals(DeckGuard.Session, this))
             {
@@ -657,6 +737,7 @@ namespace RuinaCoop
                 _lastClaimRequests.Clear();
                 _lastDeckRequests.Clear();
                 _corePageReceipts.Clear();
+                _passiveReceipts.Clear();
                 _nextDeckRequestTime.Clear();
                 _snapshotRetries.Clear();
                 if (_hostSocket != null)
@@ -680,8 +761,14 @@ namespace RuinaCoop
             return CaptureAndBroadcast(true);
         }
 
-        private bool CaptureAndBroadcast(bool requireCoreBooks)
+        private bool CapturePassivesAndBroadcast()
         {
+            return CaptureAndBroadcast(true, true);
+        }
+
+        private bool CaptureAndBroadcast(bool requireCoreBooks, bool requirePassives = false)
+        {
+            var published = false;
             try
             {
                 var snapshot = ProgressSnapshot.Capture(_selectedStageId);
@@ -689,14 +776,15 @@ namespace RuinaCoop
                 _claims.Reconcile(snapshot);
                 DeckMirror.Capture(snapshot);
                 EquipmentMirror.Capture(snapshot);
+                PassiveMirror.Capture(snapshot);
                 if (requireCoreBooks && !snapshot.CoreBooksAvailable)
                     throw new InvalidOperationException("Cannot publish the complete core page inventory: " + snapshot.CoreBooksReason);
+                if (requirePassives && !snapshot.PassivesAvailable)
+                    throw new InvalidOperationException("Cannot publish the complete passive inventory: " + snapshot.PassivesReason);
                 snapshot.DecksFrozen = PreparationFrozen;
-                if (!SameDeckData(snapshot, LatestSnapshot))
-                {
-                    _deckRevision++;
-                }
-                snapshot.DeckRevision = _deckRevision;
+                // A failed encode/validation is still inside the equipment
+                // transaction. Advance the shared revision only on publication.
+                snapshot.DeckRevision = SameDeckData(snapshot, LatestSnapshot) ? _deckRevision : _deckRevision + 1;
                 var content = snapshot.Encode(_room.Id.Value);
                 if (SameBytes(content, _latestContent))
                 {
@@ -720,7 +808,9 @@ namespace RuinaCoop
                 }
                 _latestContent = content;
                 _latestPacket = packet;
+                _deckRevision = snapshot.DeckRevision;
                 LatestSnapshot = snapshot;
+                published = true;
                 try
                 {
                     _onSnapshot(snapshot);
@@ -736,11 +826,23 @@ namespace RuinaCoop
                 Status = "Sharing host progress with " + _guests.Count + " guest(s).";
                 Debug.Log("[RuinaCoop] Progress snapshot " + snapshot.Sequence + ": " +
                     snapshot.Stages.Count + " stages, " + snapshot.Floors.Count +
-                    " floors, " + packet.Length + " bytes; local decode PASS; " + CoreInventorySummary(snapshot));
+                    " floors, " + packet.Length + " bytes; local decode PASS; " + CoreInventorySummary(snapshot) +
+                    (snapshot.PassivesAvailable ? " passive books " + snapshot.PassiveBooks.Count + "." :
+                    " passive inventory unavailable: " + snapshot.PassivesReason + "."));
                 return true;
             }
             catch (Exception exception)
             {
+                // Local publication is the commit boundary. A later display,
+                // diagnostic or transport error cannot ask a transaction to
+                // restore state that guests may already have received.
+                if (published)
+                {
+                    foreach (var connection in _guests.Values) _snapshotRetries.Add(connection.Id);
+                    Status = "Host state committed; delivery will be retried.";
+                    Debug.LogError("[RuinaCoop] Post-publication work failed: " + exception);
+                    return true;
+                }
                 var nextStatus = "Progress waiting: " + exception.Message;
                 if (Status != nextStatus)
                 {
@@ -769,7 +871,8 @@ namespace RuinaCoop
         private static bool SameDeckData(ProgressSnapshot left, ProgressSnapshot right)
         {
             return right != null && SameBytes(DeckMirror.EncodeContent(left), DeckMirror.EncodeContent(right)) &&
-                SameBytes(EquipmentMirror.EncodeContent(left), EquipmentMirror.EncodeContent(right));
+                SameBytes(EquipmentMirror.EncodeContent(left), EquipmentMirror.EncodeContent(right)) &&
+                SameBytes(PassiveMirror.EncodeContent(left), PassiveMirror.EncodeContent(right));
         }
 
         private void SendSnapshot(Connection connection)
@@ -855,6 +958,7 @@ namespace RuinaCoop
                 _lastClaimRequests.Remove(id);
                 _lastDeckRequests.Remove(id);
                 _corePageReceipts.Remove(id);
+                _passiveReceipts.Remove(id);
                 _nextDeckRequestTime.Remove(id);
                 Debug.Log("[RuinaCoop] Relay member left the room: " + id + ".");
             }
@@ -917,6 +1021,7 @@ namespace RuinaCoop
                     _lastClaimRequests.Remove(guestId);
                     _lastDeckRequests.Remove(guestId);
                     _corePageReceipts.Remove(guestId);
+                    _passiveReceipts.Remove(guestId);
                     _nextDeckRequestTime.Remove(guestId);
                     ClaimStatus = "A member disconnected; their claims remain locked until the host releases them.";
                 }
@@ -1118,6 +1223,7 @@ namespace RuinaCoop
                     CompleteDeckReply(_deferredDeckReply.Value);
                 }
                 if (_deferredCorePageReply.HasValue) CompleteCorePageReply(_deferredCorePageReply.Value);
+                if (_deferredPassiveReply.HasValue) CompletePassiveReply(_deferredPassiveReply.Value);
                 Status = "Host progress received: " + snapshot.Stages.Count + " stages, " +
                     snapshot.Floors.Count + " floors.";
                 Debug.Log("[RuinaCoop] Received host progress snapshot " + snapshot.Sequence + ".");
@@ -1201,6 +1307,12 @@ namespace RuinaCoop
                 if (EquipmentProtocol.TryDecodeRequest(bytes, _room.Id.Value, out corePageRequest))
                 {
                     HandleCorePageRequest(connection, sender, corePageRequest);
+                    return;
+                }
+                PassiveRequest passiveRequest;
+                if (PassiveProtocol.TryDecodeRequest(bytes, _room.Id.Value, out passiveRequest))
+                {
+                    HandlePassiveRequest(connection, sender, passiveRequest);
                     return;
                 }
                 DeckRequest deckRequest;
@@ -1352,6 +1464,78 @@ namespace RuinaCoop
                 left.ClaimRevision == right.ClaimRevision && left.DeckRevision == right.DeckRevision;
         }
 
+        private void ReceivePassiveReply(PassiveReply reply)
+        {
+            _onMainThread(() => CompletePassiveReply(reply));
+        }
+
+        private void CompletePassiveReply(PassiveReply reply)
+        {
+            if (_stopped || _isHost || !_guestAuthenticated ||
+                reply.RequestId != _pendingPassiveRequest || reply.RequestId <= _lastPassiveReply) return;
+            if (LatestSnapshot == null || LatestSnapshot.DeckRevision < reply.DeckRevision)
+            {
+                _deferredPassiveReply = reply;
+                DeckStatus = "等待房主被动和库存快照；若持续等待，请重新加入房间。";
+                return;
+            }
+            _deferredPassiveReply = null;
+            _lastPassiveReply = reply.RequestId;
+            _pendingPassiveRequest = 0;
+            DeckStatus = PassiveResultText(reply.Result);
+            if (reply.Result != PassiveResultCode.Accepted)
+                Debug.LogWarning("[RuinaCoop] Passive request " + reply.RequestId + " rejected: " + reply.Result + ".");
+        }
+
+        private void HandlePassiveRequest(Connection connection, ulong sender, PassiveRequest request)
+        {
+            PassiveReceipt receipt;
+            PassiveReply reply;
+            if (_passiveReceipts.TryGetValue(sender, out receipt) && request.RequestId <= receipt.Request.RequestId)
+            {
+                reply = PassiveRequestsMatch(request, receipt.Request) ? receipt.Reply : new PassiveReply
+                {
+                    RequestId = request.RequestId, Result = PassiveResultCode.InvalidRequest,
+                    DeckRevision = LatestSnapshot == null ? 0 : LatestSnapshot.DeckRevision
+                };
+            }
+            else
+            {
+                float nextTime;
+                var tooFast = _nextDeckRequestTime.TryGetValue(sender, out nextTime) && Time.realtimeSinceStartup < nextTime;
+                _nextDeckRequestTime[sender] = Time.realtimeSinceStartup + 0.1f;
+                var result = tooFast ? PassiveResultCode.InvalidRequest : ApplyPassiveRequest(sender, request);
+                reply = new PassiveReply
+                {
+                    RequestId = request.RequestId, Result = result,
+                    DeckRevision = LatestSnapshot == null ? 0 : LatestSnapshot.DeckRevision
+                };
+                _passiveReceipts[sender] = new PassiveReceipt { Request = request, Reply = reply };
+            }
+            SendSnapshot(connection);
+            var send = connection.SendMessage(PassiveProtocol.EncodeReply(_room.Id.Value, reply), SendType.Reliable);
+            if (send != Steamworks.Result.OK) Debug.LogWarning("[RuinaCoop] Passive reply send failed: " + send + ".");
+        }
+
+        private static bool PassiveRequestsMatch(PassiveRequest left, PassiveRequest right)
+        {
+            if (left.RequestId != right.RequestId || left.StageId != right.StageId || left.FloorId != right.FloorId ||
+                left.UnitIndex != right.UnitIndex || left.UnitIdentity != right.UnitIdentity || left.BookToken != right.BookToken ||
+                left.ClaimRevision != right.ClaimRevision || left.DeckRevision != right.DeckRevision ||
+                left.Slots == null || right.Slots == null || left.Slots.Length != right.Slots.Length ||
+                left.SourceBookTokens == null || right.SourceBookTokens == null ||
+                left.SourceBookTokens.Length != right.SourceBookTokens.Length) return false;
+            for (var i = 0; i < left.SourceBookTokens.Length; i++)
+                if (left.SourceBookTokens[i] != right.SourceBookTokens[i]) return false;
+            for (var i = 0; i < left.Slots.Length; i++)
+            {
+                var a = left.Slots[i]; var b = right.Slots[i];
+                if (a.Mode != b.Mode || a.SourceBookToken != b.SourceBookToken || a.SourceSlotIndex != b.SourceSlotIndex ||
+                    a.ExpectedOriginPassiveId != b.ExpectedOriginPassiveId) return false;
+            }
+            return true;
+        }
+
         private static bool SameBytes(byte[] left, byte[] right)
         {
             if (left == null || right == null || left.Length != right.Length)
@@ -1494,6 +1678,11 @@ namespace RuinaCoop
                         out CorePageReply coreReply))
                     {
                         Owner.ReceiveCorePageReply(coreReply);
+                    }
+                    else if (PassiveProtocol.TryDecodeReply(bytes, Owner._room.Id.Value,
+                        out PassiveReply passiveReply))
+                    {
+                        Owner.ReceivePassiveReply(passiveReply);
                     }
                     else
                     {

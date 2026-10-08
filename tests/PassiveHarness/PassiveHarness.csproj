@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net7.0</TargetFramework><Nullable>disable</Nullable><NoWarn>$(NoWarn);CS0649</NoWarn><DefineConstants>$(DefineConstants);PASSIVE_PURE_TESTS</DefineConstants></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/RuinaCoop/NativePassiveEditor.cs" Link="NativePassiveEditor.cs" />
+    <Compile Include="../../src/RuinaCoop/PassiveProtocol.cs" Link="PassiveProtocol.cs" />
+    <Compile Include="../../src/RuinaCoop/PassiveAuthority.cs" Link="PassiveAuthority.cs" />
+    <Compile Include="../../src/RuinaCoop/PassiveMirror.cs" Link="PassiveMirror.cs" />
+    <Compile Include="../../src/RuinaCoop/EquipmentMirror.cs" Link="EquipmentMirror.cs" />
+    <Compile Include="../../src/RuinaCoop/EquipmentProtocol.cs" Link="EquipmentProtocol.cs" />
+    <Compile Include="../../src/RuinaCoop/ProgressSnapshot.cs" Link="ProgressSnapshot.cs" />
+    <Compile Include="../../src/RuinaCoop/DeckMirror.cs" Link="DeckMirror.cs" />
+    <Compile Include="../../src/RuinaCoop/PrepClaims.cs" Link="PrepClaims.cs" />
+    <Compile Include="../CodecHarness/GameStubs.cs" Link="GameStubs.cs" />
+  </ItemGroup>
+</Project>
