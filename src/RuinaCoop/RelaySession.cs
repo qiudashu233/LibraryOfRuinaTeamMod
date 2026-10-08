@@ -24,6 +24,12 @@ namespace RuinaCoop
         private readonly Dictionary<ulong, Connection> _guests = new Dictionary<ulong, Connection>();
         private readonly Dictionary<ulong, uint> _lastClaimRequests = new Dictionary<ulong, uint>();
         private readonly Dictionary<ulong, uint> _lastDeckRequests = new Dictionary<ulong, uint>();
+        private readonly Dictionary<ulong, CorePageReceipt> _corePageReceipts = new Dictionary<ulong, CorePageReceipt>();
+        private sealed class CorePageReceipt
+        {
+            internal CorePageRequest Request;
+            internal CorePageReply Reply;
+        }
         private readonly PrepClaims _claims = new PrepClaims();
         private readonly Dictionary<uint, PendingGuest> _pendingGuests = new Dictionary<uint, PendingGuest>();
         private sealed class PendingGuest
@@ -53,6 +59,10 @@ namespace RuinaCoop
         private uint _pendingDeckRequest;
         private float _deckRequestDeadline;
         private DeckReply? _deferredDeckReply;
+        private uint _nextCorePageRequest;
+        private uint _lastCorePageReply;
+        private uint _pendingCorePageRequest;
+        private CorePageReply? _deferredCorePageReply;
         private readonly Dictionary<ulong, float> _nextDeckRequestTime = new Dictionary<ulong, float>();
         private readonly HashSet<uint> _snapshotRetries = new HashSet<uint>();
 
@@ -80,7 +90,7 @@ namespace RuinaCoop
             get { return !_stopped && (_isHost || _guestAuthenticated && _guestConnection != null); }
         }
         internal bool IsGuestSession { get { return !_stopped && !_isHost; } }
-        internal bool DeckRequestPending { get { return _pendingDeckRequest != 0; } }
+        internal bool DeckRequestPending { get { return _pendingDeckRequest != 0 || _pendingCorePageRequest != 0; } }
 
         private void NotifyDeckStateChanged()
         {
@@ -175,7 +185,7 @@ namespace RuinaCoop
                 else
                 {
                     _guestConnection.Receive(32);
-                    if (_pendingDeckRequest != 0 && Time.realtimeSinceStartup >= _deckRequestDeadline)
+                    if (DeckRequestPending && Time.realtimeSinceStartup >= _deckRequestDeadline)
                     {
                         // Keep editing locked until a reply arrives or the guest rejoins:
                         // an unacknowledged request may already have changed the host deck.
@@ -502,6 +512,80 @@ namespace RuinaCoop
                 : "Deck edit: " + result + ".";
         }
 
+        internal bool RequestCorePageEdit(ProgressSnapshot expected, byte unitIndex, ulong bookToken)
+        {
+            if (!ValidateDisplayedDeckRequest(expected)) return false;
+            if (unitIndex >= expected.UnitDecks.Count) return false;
+            var unit = expected.UnitDecks[unitIndex];
+            var request = new CorePageRequest
+            {
+                RequestId = ++_nextCorePageRequest,
+                StageId = expected.SelectedStageId,
+                FloorId = expected.SelectedFloorId,
+                UnitIndex = unitIndex,
+                UnitIdentity = unit.UnitIdentity,
+                OldBookToken = unit.BookToken,
+                TargetBookToken = bookToken,
+                ClaimRevision = expected.ClaimRevision,
+                DeckRevision = expected.DeckRevision
+            };
+            if (_isHost)
+            {
+                var result = ApplyCorePageRequest(_hostId.Value, request);
+                DeckStatus = CorePageResultText(result);
+                return result == CorePageResultCode.Accepted;
+            }
+            if (!_guestAuthenticated || _guestConnection == null)
+            {
+                DeckStatus = "Waiting for host room verification.";
+                return false;
+            }
+            var permission = EquipmentAuthority.Validate(expected, SteamClient.SteamId.Value, request);
+            if (permission != CorePageResultCode.Accepted)
+            {
+                DeckStatus = CorePageResultText(permission);
+                return false;
+            }
+            var send = _guestConnection.Connection.SendMessage(
+                EquipmentProtocol.EncodeRequest(_room.Id.Value, request), SendType.Reliable);
+            if (send == Steamworks.Result.OK)
+            {
+                _pendingCorePageRequest = request.RequestId;
+                _deckRequestDeadline = Time.realtimeSinceStartup + 10f;
+            }
+            DeckStatus = send == Steamworks.Result.OK
+                ? "Core page edit sent; waiting for host."
+                : "Core page edit send failed: " + send + ".";
+            return send == Steamworks.Result.OK;
+        }
+
+        private CorePageResultCode ApplyCorePageRequest(ulong sender, CorePageRequest request)
+        {
+            if (!_isHost) return CorePageResultCode.NotReady;
+            if (PreparationFrozen) return CorePageResultCode.Frozen;
+            if (!CaptureAndBroadcast()) return CorePageResultCode.NotReady;
+            var snapshot = LatestSnapshot;
+            var validation = EquipmentAuthority.Validate(snapshot, sender, request);
+            if (validation != CorePageResultCode.Accepted) return validation;
+            var floor = snapshot.Floors.Find(candidate => (byte)candidate.Sephirah == snapshot.SelectedFloorId);
+            var unit = floor == null || request.UnitIndex >= floor.UnitReferences.Count
+                ? null : floor.UnitReferences[request.UnitIndex] as UnitDataModel;
+            BookModel target;
+            if (unit == null || !EquipmentMirror.TryResolveBook(snapshot, request.TargetBookToken, out target))
+                return CorePageResultCode.UnknownTarget;
+            string reason;
+            var result = EquipmentTransaction.Equip(unit, target, CaptureCorePageAndBroadcast, out reason);
+            if (result != EquipmentTransactionResult.Accepted)
+                Debug.LogWarning("[RuinaCoop] Core page transaction: " + reason);
+            return result == EquipmentTransactionResult.Accepted ? CorePageResultCode.Accepted :
+                result == EquipmentTransactionResult.Rejected ? CorePageResultCode.VanillaRejected : CorePageResultCode.Failed;
+        }
+
+        private static string CorePageResultText(CorePageResultCode result)
+        {
+            return "Core page edit: " + result + ".";
+        }
+
         internal void ReleaseAbsentClaims()
         {
             if (_isHost && !PreparationFrozen && _claims.ReleaseAbsent(id =>
@@ -539,6 +623,8 @@ namespace RuinaCoop
             _stopped = true;
             _pendingDeckRequest = 0;
             _deferredDeckReply = null;
+            _pendingCorePageRequest = 0;
+            _deferredCorePageReply = null;
             DeckStatus = "Room session closed.";
             if (ReferenceEquals(DeckGuard.Session, this))
             {
@@ -570,6 +656,7 @@ namespace RuinaCoop
                 _guests.Clear();
                 _lastClaimRequests.Clear();
                 _lastDeckRequests.Clear();
+                _corePageReceipts.Clear();
                 _nextDeckRequestTime.Clear();
                 _snapshotRetries.Clear();
                 if (_hostSocket != null)
@@ -585,12 +672,25 @@ namespace RuinaCoop
 
         private bool CaptureAndBroadcast()
         {
+            return CaptureAndBroadcast(false);
+        }
+
+        private bool CaptureCorePageAndBroadcast()
+        {
+            return CaptureAndBroadcast(true);
+        }
+
+        private bool CaptureAndBroadcast(bool requireCoreBooks)
+        {
             try
             {
                 var snapshot = ProgressSnapshot.Capture(_selectedStageId);
                 _selectedStageId = snapshot.SelectedStageId;
                 _claims.Reconcile(snapshot);
                 DeckMirror.Capture(snapshot);
+                EquipmentMirror.Capture(snapshot);
+                if (requireCoreBooks && !snapshot.CoreBooksAvailable)
+                    throw new InvalidOperationException("Cannot publish the complete core page inventory: " + snapshot.CoreBooksReason);
                 snapshot.DecksFrozen = PreparationFrozen;
                 if (!SameDeckData(snapshot, LatestSnapshot))
                 {
@@ -653,7 +753,8 @@ namespace RuinaCoop
 
         private static bool SameDeckData(ProgressSnapshot left, ProgressSnapshot right)
         {
-            return right != null && SameBytes(DeckMirror.EncodeContent(left), DeckMirror.EncodeContent(right));
+            return right != null && SameBytes(DeckMirror.EncodeContent(left), DeckMirror.EncodeContent(right)) &&
+                SameBytes(EquipmentMirror.EncodeContent(left), EquipmentMirror.EncodeContent(right));
         }
 
         private void SendSnapshot(Connection connection)
@@ -738,6 +839,7 @@ namespace RuinaCoop
                 _guests.Remove(id);
                 _lastClaimRequests.Remove(id);
                 _lastDeckRequests.Remove(id);
+                _corePageReceipts.Remove(id);
                 _nextDeckRequestTime.Remove(id);
                 Debug.Log("[RuinaCoop] Relay member left the room: " + id + ".");
             }
@@ -799,6 +901,7 @@ namespace RuinaCoop
                     _guests.Remove(guestId);
                     _lastClaimRequests.Remove(guestId);
                     _lastDeckRequests.Remove(guestId);
+                    _corePageReceipts.Remove(guestId);
                     _nextDeckRequestTime.Remove(guestId);
                     ClaimStatus = "A member disconnected; their claims remain locked until the host releases them.";
                 }
@@ -999,6 +1102,7 @@ namespace RuinaCoop
                 {
                     CompleteDeckReply(_deferredDeckReply.Value);
                 }
+                if (_deferredCorePageReply.HasValue) CompleteCorePageReply(_deferredCorePageReply.Value);
                 Status = "Host progress received: " + snapshot.Stages.Count + " stages, " +
                     snapshot.Floors.Count + " floors.";
                 Debug.Log("[RuinaCoop] Received host progress snapshot " + snapshot.Sequence + ".");
@@ -1076,6 +1180,12 @@ namespace RuinaCoop
                 if (sender == 0 || !IsLobbyMember((SteamId)sender))
                 {
                     Debug.LogWarning("[RuinaCoop] Request from an unverified room member ignored.");
+                    return;
+                }
+                CorePageRequest corePageRequest;
+                if (EquipmentProtocol.TryDecodeRequest(bytes, _room.Id.Value, out corePageRequest))
+                {
+                    HandleCorePageRequest(connection, sender, corePageRequest);
                     return;
                 }
                 DeckRequest deckRequest;
@@ -1163,6 +1273,68 @@ namespace RuinaCoop
             {
                 Debug.LogWarning("[RuinaCoop] Deck reply send failed: " + send + ".");
             }
+        }
+
+        private void ReceiveCorePageReply(CorePageReply reply)
+        {
+            _onMainThread(() => CompleteCorePageReply(reply));
+        }
+
+        private void CompleteCorePageReply(CorePageReply reply)
+        {
+            if (_stopped || _isHost || !_guestAuthenticated ||
+                reply.RequestId != _pendingCorePageRequest || reply.RequestId <= _lastCorePageReply) return;
+            if (LatestSnapshot == null || LatestSnapshot.DeckRevision < reply.DeckRevision)
+            {
+                _deferredCorePageReply = reply;
+                DeckStatus = "Waiting for host equipment state; rejoin if this message persists.";
+                return;
+            }
+            _deferredCorePageReply = null;
+            _lastCorePageReply = reply.RequestId;
+            _pendingCorePageRequest = 0;
+            DeckStatus = CorePageResultText(reply.Result);
+            if (reply.Result != CorePageResultCode.Accepted)
+                Debug.LogWarning("[RuinaCoop] Core page request " + reply.RequestId + " rejected: " + reply.Result + ".");
+        }
+
+        private void HandleCorePageRequest(Connection connection, ulong sender, CorePageRequest request)
+        {
+            CorePageReceipt receipt;
+            CorePageReply reply;
+            if (_corePageReceipts.TryGetValue(sender, out receipt) && request.RequestId <= receipt.Request.RequestId)
+            {
+                var sameRequest = CorePageRequestsMatch(request, receipt.Request);
+                reply = sameRequest ? receipt.Reply : new CorePageReply
+                {
+                    RequestId = request.RequestId, Result = CorePageResultCode.InvalidRequest,
+                    DeckRevision = LatestSnapshot == null ? 0 : LatestSnapshot.DeckRevision
+                };
+            }
+            else
+            {
+                float nextTime;
+                var tooFast = _nextDeckRequestTime.TryGetValue(sender, out nextTime) && Time.realtimeSinceStartup < nextTime;
+                _nextDeckRequestTime[sender] = Time.realtimeSinceStartup + 0.1f;
+                var result = tooFast ? CorePageResultCode.InvalidRequest : ApplyCorePageRequest(sender, request);
+                reply = new CorePageReply
+                {
+                    RequestId = request.RequestId, Result = result,
+                    DeckRevision = LatestSnapshot == null ? 0 : LatestSnapshot.DeckRevision
+                };
+                _corePageReceipts[sender] = new CorePageReceipt { Request = request, Reply = reply };
+            }
+            SendSnapshot(connection);
+            var send = connection.SendMessage(EquipmentProtocol.EncodeReply(_room.Id.Value, reply), SendType.Reliable);
+            if (send != Steamworks.Result.OK) Debug.LogWarning("[RuinaCoop] Core page reply send failed: " + send + ".");
+        }
+
+        private static bool CorePageRequestsMatch(CorePageRequest left, CorePageRequest right)
+        {
+            return left.RequestId == right.RequestId && left.StageId == right.StageId &&
+                left.FloorId == right.FloorId && left.UnitIndex == right.UnitIndex && left.UnitIdentity == right.UnitIdentity &&
+                left.OldBookToken == right.OldBookToken && left.TargetBookToken == right.TargetBookToken &&
+                left.ClaimRevision == right.ClaimRevision && left.DeckRevision == right.DeckRevision;
         }
 
         private static bool SameBytes(byte[] left, byte[] right)
@@ -1302,6 +1474,11 @@ namespace RuinaCoop
                         out DeckReply deckReply))
                     {
                         Owner.ReceiveDeckReply(deckReply);
+                    }
+                    else if (EquipmentProtocol.TryDecodeReply(bytes, Owner._room.Id.Value,
+                        out CorePageReply coreReply))
+                    {
+                        Owner.ReceiveCorePageReply(coreReply);
                     }
                     else
                     {

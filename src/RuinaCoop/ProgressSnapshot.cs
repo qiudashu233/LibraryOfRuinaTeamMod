@@ -7,10 +7,21 @@ using UI;
 
 namespace RuinaCoop
 {
+    internal enum CoreBooksReason : byte
+    { None = 0, NotCaptured = 1, TooManyBooks = 2, PacketLimit = 3, CaptureFailed = 4, UnsupportedData = 5 }
+    internal enum CoreBookKind : byte { Ordinary = 0, Default = 1, Special = 2 }
+    [Flags]
+    internal enum CoreBookFlags : ushort
+    {
+        None = 0, Equipped = 1, PassiveBound = 2, CannotEquip = 4, FixedDeck = 8,
+        MultiDeck = 16, Locked = 32, UnsupportedId = 64, InvalidInstance = 128,
+        OwnerMismatch = 256, UnsupportedCards = 512, UnsupportedDisplay = 1024, DraftMismatch = 2048
+    }
+
     internal sealed class ProgressSnapshot
     {
         private const uint Magic = 0x52435053;
-        private const byte WireVersion = 4;
+        private const byte WireVersion = 5;
         private const int MaxPacketBytes = 65536;
         private const int MaxStages = 512;
         private const int MaxFloors = 12;
@@ -25,6 +36,9 @@ namespace RuinaCoop
         internal uint ClaimRevision;
         internal uint DeckRevision;
         internal bool DecksFrozen;
+        internal bool CoreBooksAvailable;
+        internal CoreBooksReason CoreBooksReason = RuinaCoop.CoreBooksReason.NotCaptured;
+        internal readonly List<CoreBookEntry> CoreBooks = new List<CoreBookEntry>();
         internal readonly List<UnitDeckEntry> UnitDecks = new List<UnitDeckEntry>();
         internal readonly List<CardStockEntry> CardStock = new List<CardStockEntry>();
         internal readonly List<ulong> ClaimOwners = new List<ulong>();
@@ -35,6 +49,7 @@ namespace RuinaCoop
         {
             // Stable host unit token; zero means no supported editable identity.
             internal ulong UnitIdentity;
+            internal ulong BookToken;
             internal readonly UnitDisplayEntry Display = new UnitDisplayEntry();
             // Zero identifies an absent or unsupported key page, which is view only.
             internal int BookId;
@@ -73,6 +88,20 @@ namespace RuinaCoop
             internal uint EyeColor;
             internal uint SkinColor;
             internal int Height = 170;
+        }
+
+        internal sealed class CoreBookEntry
+        {
+            internal ulong BookToken;
+            internal int BookId;
+            internal int BookInstanceId;
+            internal CoreBookKind Kind;
+            internal CoreBookFlags Flags;
+            internal byte OccupiedFloorId = PrepClaims.NoFloor;
+            internal byte OccupiedUnitIndex = byte.MaxValue;
+            internal readonly UnitDisplayEntry Display = new UnitDisplayEntry();
+            internal readonly List<int> CurrentCards = new List<int>();
+            [NonSerialized] internal object BookReference;
         }
 
         internal sealed class CardStockEntry
@@ -223,6 +252,7 @@ namespace RuinaCoop
                 }
                 writer.Write(DeckRevision);
                 DeckMirror.WriteData(writer, this, false);
+                EquipmentMirror.WriteData(writer, this, false);
                 writer.Flush();
                 if (stream.Length > MaxPacketBytes)
                 {
@@ -243,7 +273,7 @@ namespace RuinaCoop
         {
             snapshot = null;
             reason = null;
-            if (packet == null || packet.Length > MaxPacketBytes || packet.Length < 47)
+            if (packet == null || packet.Length > MaxPacketBytes || packet.Length < 52)
             {
                 return Reject(out reason, "Packet size is invalid.");
             }
@@ -351,6 +381,7 @@ namespace RuinaCoop
                     {
                         return false;
                     }
+                    if (!EquipmentMirror.TryReadData(reader, result, out reason)) return false;
                     if (stream.Position != stream.Length)
                     {
                         return Reject(out reason, "Packet has trailing bytes.");

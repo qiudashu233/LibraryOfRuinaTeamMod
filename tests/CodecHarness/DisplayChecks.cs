@@ -76,8 +76,8 @@ internal static class DisplayChecks
     {
         var snapshot = Sample();
         var bytes = snapshot.Encode(room);
-        Check(bytes[4] == 4, "wire4 tag");
-        Check(ProgressSnapshot.TryDecode(bytes, room, out var parsed), "wire4 round trip");
+        Check(bytes[4] == 5, "wire5 tag");
+        Check(ProgressSnapshot.TryDecode(bytes, room, out var parsed), "wire5 round trip");
         var deck = parsed.UnitDecks[0];
         var display = deck.Display;
         Check(deck.UnitIdentity == 100 && parsed.UnitDecks[1].UnitIdentity == 101 &&
@@ -211,7 +211,7 @@ internal static class DisplayChecks
             "captures effective custom page, actual skin, None and RGBA");
         Check(ReferenceEquals(unit.bookItem, book) && ReferenceEquals(unit.customizeData, custom) &&
             book.Passives.Count == 3 && custom.height == 185, "capture does not mutate host models");
-        Check(ProgressSnapshot.TryDecode(snapshot.Encode(room), room, out _), "capture is valid wire4 metadata");
+        Check(ProgressSnapshot.TryDecode(snapshot.Encode(room), room, out _), "capture is valid wire5 metadata");
         DeckMirror.Capture(snapshot);
         Check(snapshot.UnitDecks[0].UnitIdentity == token, "same host unit keeps its token");
         var replacement = new UnitDataModel { name = unit.name, bookItem = book, defaultBook = book };

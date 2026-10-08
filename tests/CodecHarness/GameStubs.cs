@@ -32,6 +32,8 @@ namespace RuinaCoop
     {
         internal static LibraryModel Instance = new LibraryModel();
         internal List<LibraryFloorModel> OpenedFloors = new List<LibraryFloorModel>();
+        private List<LibraryFloorModel> _floorList;
+        internal LibraryModel() { _floorList = OpenedFloors; }
         internal List<LibraryFloorModel> GetOpenedFloorList() => OpenedFloors;
         internal int GetChapter() => 0;
         internal int GetLibraryLevel() => 0;
@@ -61,6 +63,16 @@ namespace RuinaCoop
 
     internal sealed class PassiveXmlInfo { internal LorId id; }
     internal sealed class BookPassiveInfo { internal PassiveXmlInfo passive; }
+    internal sealed class PassiveModel
+    {
+        internal sealed class PassiveModelSavedData
+        {
+            internal PassiveXmlInfo currentpassive;
+            internal int receivepassivebookId = -1, givePassiveBookId = -1;
+        }
+        internal PassiveModelSavedData originData = new PassiveModelSavedData();
+        internal PassiveModelSavedData reservedData = new PassiveModelSavedData();
+    }
 
     internal sealed class UnitDataModel
     {
@@ -77,7 +89,20 @@ namespace RuinaCoop
         internal Gender gender;
         internal Gender appearanceType;
         internal string workshopSkin;
+        internal BookModel GetCustomBookItemData() => AppearanceBook;
         internal bool IsChangeItemLock() => Locked;
+    }
+
+    internal sealed class BookXmlInfo { internal bool canNotEquip; }
+
+    internal sealed class BookInventoryModel
+    {
+        internal static BookInventoryModel Instance = new BookInventoryModel();
+        internal readonly List<BookModel> Books = new List<BookModel>();
+        internal BookModel BlackSilence;
+        internal List<BookModel> GetBookListAll() => Books;
+        internal List<BookModel> GetBookList_equip() => Books;
+        internal BookModel GetBlackSilenceBook() => BlackSilence;
     }
 
     internal sealed class BookModel
@@ -94,6 +119,21 @@ namespace RuinaCoop
         internal readonly List<BookPassiveInfo> Passives = new List<BookPassiveInfo>();
         internal string GetCharacterName() => CharacterSkin;
         internal List<BookPassiveInfo> GetPassiveInfoList(bool ignored) => Passives;
+        internal sealed class BookEquipedBookSavedData
+        {
+            internal int equipedPassiveBookInstanceId = -1;
+            internal readonly List<int> equipedBookIdListInPassive = new List<int>();
+        }
+        internal BookEquipedBookSavedData originData = new BookEquipedBookSavedData();
+        internal BookEquipedBookSavedData reservedData = new BookEquipedBookSavedData();
+        internal BookXmlInfo ClassInfo = new BookXmlInfo();
+        internal UnitDataModel owner;
+        internal int HP = 100, Break = 50;
+        internal bool Basic, BlueLocked;
+        internal bool IsBasicBook() => Basic;
+        internal bool IsLockByBluePrimary() => BlueLocked;
+        internal readonly List<PassiveModel> PassiveModels = new List<PassiveModel>();
+        internal List<PassiveModel> GetPassiveModelList() => PassiveModels;
         internal int GetDeckSize() => DeckSize;
         internal bool IsFixedDeck() => Fixed;
         internal bool IsMultiDeck() => MultiDeck;

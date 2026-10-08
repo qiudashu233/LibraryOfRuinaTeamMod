@@ -27,6 +27,7 @@ namespace RuinaCoop
             {
                 DeckGuard.Install(harmony);
                 NativeDeckEditor.Install(harmony);
+                NativeEquipmentEditor.Install(harmony);
                 harmony.Patch(original, postfix: new HarmonyMethod(postfix));
             }
             catch

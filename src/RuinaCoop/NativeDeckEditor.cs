@@ -33,8 +33,17 @@ namespace RuinaCoop
         private static bool _renderDirty;
         private static string _status = "";
         private static Vector2 _rosterScroll;
-        private static bool Active { get { return _binding != null && _binding.Valid && !_closing; } }
-        private static UnitDataModel Current { get { return Active ? _models.Units[_binding.UnitIndex] : null; } }
+        internal static bool Active { get { return _binding != null && _binding.Valid && !_closing; } }
+        internal static UnitDataModel Current { get { return Active ? _models.Units[_binding.UnitIndex] : null; } }
+        internal static RelaySession Session { get { return Active ? _session : null; } }
+        internal static ProgressSnapshot Snapshot { get { return Active ? _binding.Snapshot : null; } }
+        internal static byte UnitIndex { get { return Active ? _binding.UnitIndex : byte.MaxValue; } }
+        internal static bool CanEdit { get { return Active && _binding.CanEdit; } }
+        internal static bool ReadyForInput { get { return CanEdit && !_dirty && _session.IsReadyForDeck && !_session.DeckRequestPending; } }
+        internal static BookModel CreateDetachedBook(ProgressSnapshot.CoreBookEntry entry)
+        { return _models.CreateDetachedBook(entry); }
+        internal static void UpdateDetachedBook(BookModel book, ProgressSnapshot.CoreBookEntry entry)
+        { _models.UpdateDetachedBook(book, entry); }
 
         internal static void Install(Harmony harmony)
         {
@@ -67,7 +76,7 @@ namespace RuinaCoop
             Patch(harmony, "UI.UICardEquipInfoPanel", "OpenCardEquipInfo", new[] { "DiceCardItemModel", "System.Boolean" }, "UnsafePrefix");
             Patch(harmony, "UI.UILibrarianInfoInCardPhase", "OnClickReleaseToggle", new string[0], "UnsafePrefix");
             Patch(harmony, "UI.UILibrarianInfoInCardPhase", "OnPointerClickPassiveSlot", new[] { "UnityEngine.EventSystems.BaseEventData" }, "UnsafePrefix");
-            Patch(harmony, "UI.UILibrarianInfoInCardPhase", "OnPointerClickEquipPage", new[] { "UnityEngine.EventSystems.BaseEventData" }, "UnsafePrefix");
+            Patch(harmony, "UI.UILibrarianInfoInCardPhase", "OnPointerClickEquipPage", new[] { "UnityEngine.EventSystems.BaseEventData" }, "CorePageClickPrefix");
         }
 
         private static void Patch(Harmony harmony, string typeName, string methodName, string[] parameters,
@@ -107,7 +116,7 @@ namespace RuinaCoop
             var oldSnapshot = _binding.Snapshot;
             if (!ReferenceEquals(session, _session) || session == null || !session.IsReadyForDeck ||
                 !ControllerVisible() ||
-                session.PreparationFrozen || !_binding.TryUpdate(session.RoomId, session.LatestSnapshot))
+                session.PreparationFrozen || !AcceptSnapshot(session.RoomId, session.LatestSnapshot))
             { Close(); return; }
             if (!ReferenceEquals(oldSnapshot, _binding.Snapshot))
             { _dirty = true; _renderDirty |= !SameAppearance(oldSnapshot, _binding.Snapshot); }
@@ -132,9 +141,18 @@ namespace RuinaCoop
         {
             if (_binding == null || !ReferenceEquals(session, _session)) return;
             var oldSnapshot = _binding.Snapshot;
-            if (!_binding.TryUpdate(session.RoomId, snapshot)) { Close(); return; }
+            if (!AcceptSnapshot(session.RoomId, snapshot)) { Close(); return; }
             _dirty = true;
             _renderDirty |= !SameAppearance(oldSnapshot, _binding.Snapshot);
+        }
+
+        private static bool AcceptSnapshot(ulong roomId, ProgressSnapshot snapshot)
+        {
+            if (snapshot != null && snapshot.Sequence > _binding.Snapshot.Sequence &&
+                _binding.UnitIndex < snapshot.UnitDecks.Count &&
+                _binding.TryRebindCorePage(roomId, snapshot, _binding.Snapshot.UnitDecks[_binding.UnitIndex].UnitIdentity))
+                return true;
+            return _binding.TryUpdate(roomId, snapshot);
         }
 
         private static bool SameAppearance(ProgressSnapshot left, ProgressSnapshot right)
@@ -173,10 +191,11 @@ namespace RuinaCoop
             try
             {
                 GUILayout.Label("联机准备 · " + floor.Sephirah);
-                GUILayout.Label(Active ? (_binding.CanEdit ? "原版卡组编辑 · 房主权威" : "原版卡组查看 · 只读") : "选择馆员进入原版卡组页");
+                GUILayout.Label(Active ? (_binding.CanEdit ? "原版配装编辑 · 房主权威" : "原版配装查看 · 只读") : "选择馆员进入原版卡组页");
                 if (session.DeckRequestPending) GUILayout.Label("等待房主确认与卡组快照…");
                 if (!string.IsNullOrEmpty(_status)) GUILayout.Label(_status);
                 if (Active) GUILayout.Label(session.DeckStatus);
+                if (Active && !string.IsNullOrEmpty(NativeEquipmentEditor.Status)) GUILayout.Label(NativeEquipmentEditor.Status);
                 _rosterScroll = GUILayout.BeginScrollView(_rosterScroll, GUILayout.Height(210));
                 for (byte i = 0; i < snapshot.UnitDecks.Count; i++)
                 {
@@ -196,6 +215,7 @@ namespace RuinaCoop
                 }
                 GUILayout.EndScrollView();
                 GUI.enabled = true;
+                if (Active && GUILayout.Button("查看/更换核心书页")) NativeEquipmentEditor.TryOpen();
                 if (Active && GUILayout.Button("返回准备")) Close();
             }
             finally { GUI.enabled = previousEnabled; GUILayout.EndArea(); }
@@ -235,7 +255,7 @@ namespace RuinaCoop
                 NativeUi.Set(_uiData, "sephirah", (SephirahType)snapshot.SelectedFloorId);
                 NativeUi.Set(_uiData, "unit", Current);
                 _renderDirty = true;
-                _status = "单卡添加/移除由房主确认；核心书页、预设与被动继承暂不可修改。";
+                _status = "卡组和普通核心书更换由房主确认；预设与被动继承暂不可修改。";
                 NativeUi.Call(_controller, "CallUIPhase", Enum.ToObject(_previousPhase.GetType(), 10));
                 Refresh();
                 _dirty = false;
@@ -281,6 +301,12 @@ namespace RuinaCoop
             try
             {
                 NativeUi.Set(_uiData, "unit", Current);
+                if (NativeEquipmentEditor.Refresh())
+                {
+                    if (Active) RenderRoster(FindPanel("UI.UILibrarianCharacterListPanel"));
+                    RestoreTutorial();
+                    return;
+                }
                 var panel = CardPanel();
                 CardPanelPrefix(panel);
                 RestoreTutorial();
@@ -290,7 +316,7 @@ namespace RuinaCoop
 
         private static object CardPanel() { return FindPanel("UI.UICardPanel"); }
 
-        private static object FindPanel(string typeName)
+        internal static object FindPanel(string typeName)
         {
             foreach (var panel in (IList)NativeUi.Get(_controller, "Panels"))
                 if (panel != null && panel.GetType().FullName == typeName) return panel;
@@ -364,8 +390,14 @@ namespace RuinaCoop
         private static bool SephirahPrefix(ref bool __result) { if (!Active) return true; __result = false; return false; }
         private static bool PhasePrefix(object[] __args)
         {
-            if (Active && Convert.ToInt32(__args[0]) != 10) Close();
+            if (Active && Convert.ToInt32(__args[0]) != 10 && !NativeEquipmentEditor.AllowsPhase(Convert.ToInt32(__args[0]))) Close();
             return true;
+        }
+        private static bool CorePageClickPrefix()
+        {
+            if (!Active) return true;
+            NativeEquipmentEditor.TryOpen();
+            return false;
         }
         private static bool UnsafePrefix() { return !Active; }
         private static bool FalseInNativePrefix(ref bool __result) { if (!Active) return true; __result = false; return false; }
@@ -464,7 +496,7 @@ namespace RuinaCoop
         private static void Hide(object component)
         { Visibility(component, false); }
 
-        private static void Visibility(object component, bool visible)
+        internal static void Visibility(object component, bool visible)
         {
             if (component == null) return;
             var gameObject = component as GameObject ?? NativeUi.Get(component, "gameObject") as GameObject;
@@ -489,6 +521,7 @@ namespace RuinaCoop
             try
             {
                 if (_session != null) _session.DeckStateChanged -= Changed;
+                NativeEquipmentEditor.Close();
                 // A vanilla OnClose may save the host library. Restore these
                 // flags before triggering any original panel transition.
                 RestoreTutorial();

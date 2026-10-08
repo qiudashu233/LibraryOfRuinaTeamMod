@@ -81,6 +81,37 @@ namespace RuinaCoop
             return book;
         }
 
+        internal BookModel CreateDetachedBook(ProgressSnapshot.CoreBookEntry entry)
+        {
+            if (_disposed || entry == null || entry.BookId <= 0)
+                throw new InvalidOperationException("Host core page is unavailable.");
+            var book = CreateBook(entry.BookId);
+            UpdateDetachedBook(book, entry);
+            return book;
+        }
+
+        internal void UpdateDetachedBook(BookModel book, ProgressSnapshot.CoreBookEntry entry)
+        {
+            if (_disposed || !IsMirrorBook(book) || entry == null || book.BookId.id != entry.BookId)
+                throw new InvalidOperationException("Core page display identity changed.");
+            book.instanceId = entry.BookInstanceId;
+            book.owner = null;
+            var deck = NativeUi.Get(book, "_deck") as DeckModel;
+            var cards = deck.GetCardList_nocopy();
+            cards.Clear();
+            foreach (var id in entry.CurrentCards) cards.Add(CardXml(id));
+            var display = entry.Display;
+            var passives = new List<PassiveModel>();
+            if (display.Available)
+            {
+                book.SetHp(display.MaxHp);
+                book.SetBp(display.Break);
+                foreach (var id in display.PassiveIds)
+                    passives.Add(new PassiveModel(new LorId(id), entry.BookInstanceId, 0));
+            }
+            NativeUi.Set(book, "_activatedAllPassives", passives);
+        }
+
         private void RegisterBook(BookModel book)
         {
             if (book == null || _books.Contains(book)) return;

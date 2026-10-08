@@ -87,6 +87,9 @@ internal static class Program
         NativeDeckEditor.ConsumeClick = true;
         Check(!(bool)Invoke("UiUnitFieldPrefix", list, null, new object[0]), "Routed native card click also ran vanilla mutation.");
         NativeDeckEditor.ConsumeClick = false;
+        NativeEquipmentEditor.ConsumeClick = true;
+        Check(!(bool)Invoke("UiEquipBookPrefix", slot), "Routed core page click also ran vanilla equipment mutation.");
+        NativeEquipmentEditor.ConsumeClick = false;
         NativeDeckModels.MirrorUnit = null;
         NativeDeckModels.MirrorBook = null;
         NativeDeckModels.MirrorDeck = null;

@@ -20,7 +20,7 @@ internal static class Program
         var result = new ProgressSnapshot
         {
             Sequence = sequence, SelectedStageId = 101, SelectedFloorId = (byte)SephirahType.Malkuth,
-            ClaimRevision = 11, DeckRevision = 22
+            ClaimRevision = 11, DeckRevision = 22, CoreBooksAvailable = true, CoreBooksReason = CoreBooksReason.None
         };
         result.Stages.Add(new ProgressSnapshot.StageEntry { Id = 101, State = StoryState.Open, Name = "Test" });
         var floor = new ProgressSnapshot.FloorEntry { Sephirah = SephirahType.Malkuth };
@@ -33,10 +33,19 @@ internal static class Program
         {
             var deck = new ProgressSnapshot.UnitDeckEntry
             {
-                UnitIdentity = (ulong)(400 + i), BookId = 500 + i, BookInstanceId = 600 + i, Capacity = 9
+                UnitIdentity = (ulong)(400 + i), BookId = 500 + i, BookInstanceId = 600 + i,
+                BookToken = (ulong)(700 + i), Capacity = 9
             };
             deck.Cards.Add(100);
             result.UnitDecks.Add(deck);
+            var core = new ProgressSnapshot.CoreBookEntry
+            {
+                BookToken = deck.BookToken, BookId = deck.BookId, BookInstanceId = deck.BookInstanceId,
+                Kind = CoreBookKind.Ordinary, Flags = CoreBookFlags.Equipped,
+                OccupiedFloorId = result.SelectedFloorId, OccupiedUnitIndex = (byte)i
+            };
+            core.Display.Available = true;
+            result.CoreBooks.Add(core);
         }
         result.CardStock.Add(new ProgressSnapshot.CardStockEntry { Id = 100, Count = 1 });
         result.CardStock.Add(new ProgressSnapshot.CardStockEntry { Id = 101, Count = 2 });
@@ -201,7 +210,83 @@ internal static class Program
         CreationAndAuthority();
         DisplayGenerations();
         Invalidation();
+        CorePageRebinding();
         Console.WriteLine("PASS: native role identity, display generations, readonly/frozen state and lifecycle; " + _checks + " checks.");
         Console.WriteLine("Transport ACK ordering is checked against compiled RelaySession by native-target-smoke.ps1.");
+    }
+
+    private static void CorePageRebinding()
+    {
+        var binding = Open();
+        var oldClick = binding.CaptureEvent();
+        var changed = Snapshot(2);
+        changed.DeckRevision++;
+        ReplaceBook(changed, 900, 901, 902);
+        Check(binding.TryRebindCorePage(Room, changed, 400) && binding.Valid && binding.CanEdit &&
+            binding.Snapshot == changed && binding.UnitIndex == 0, "confirmed ordinary page change preserves the owned role");
+        Check(!binding.CanSubmit(oldClick, 101, DeckAction.Add), "page replacement retires every earlier click");
+        Check(binding.CanSubmit(binding.CaptureEvent(), 101, DeckAction.Add), "replacement page can edit with a fresh event");
+        Check(!binding.TryRebindCorePage(Room, Snapshot(1), 400) && binding.Snapshot == changed,
+            "older snapshot cannot undo replacement");
+        Check(!binding.TryRebindCorePage(Room, changed, 400), "same snapshot is not a new page replacement");
+
+        var sameXml = Snapshot(3);
+        sameXml.DeckRevision = changed.DeckRevision + 1;
+        ReplaceBook(sameXml, 900, 903, 904);
+        var priorClick = binding.CaptureEvent();
+        Check(binding.TryRebindCorePage(Room, sameXml, 400) && !binding.CanSubmit(priorClick, 101, DeckAction.Add),
+            "same XML on a distinct book instance has a distinct generation");
+
+        foreach (var change in new Action<ProgressSnapshot>[]
+        {
+            s => s.SelectedStageId++, s => s.SelectedFloorId = (byte)SephirahType.Yesod,
+            s => s.UnitDecks[0].UnitIdentity++, s => s.UnitDecks[1].UnitIdentity++,
+            s => s.ClaimOwners[0] = Other, s => s.DecksFrozen = true,
+            s => s.UnitDecks[0].Fixed = true, s => s.UnitDecks[0].MultiDeck = true,
+            s => s.UnitDecks[0].BookToken = 0, s => s.UnitDecks.RemoveAt(1),
+            s => s.CoreBooksAvailable = false, s => s.CoreBooksReason = CoreBooksReason.CaptureFailed,
+            s => s.CoreBooks.Clear(), s => s.CoreBooks[0].Kind = CoreBookKind.Special,
+            s => s.CoreBooks[0].Kind = CoreBookKind.Default, s => s.CoreBooks[0].BookId++,
+            s => s.CoreBooks[0].BookInstanceId++, s => s.CoreBooks[0].OccupiedFloorId++,
+            s => s.CoreBooks[0].OccupiedUnitIndex++, s => s.CoreBooks[0].Display.Available = false,
+            s => s.CoreBooks[0].Flags = CoreBookFlags.None,
+            s => s.CoreBooks[0].Flags |= CoreBookFlags.PassiveBound,
+            s => s.CoreBooks[0].Flags |= CoreBookFlags.DraftMismatch,
+            s => s.CoreBooks[0].Flags |= CoreBookFlags.UnsupportedCards,
+            s => s.CoreBooks[0].Flags |= CoreBookFlags.CannotEquip,
+            s => s.CoreBooks[0].Flags |= CoreBookFlags.OwnerMismatch
+        })
+        {
+            var guarded = Open();
+            var next = Snapshot(2);
+            ReplaceBook(next, 900, 901, 902);
+            change(next);
+            Check(!guarded.TryRebindCorePage(Room, next, 400), "unsafe context or unsupported page cannot use the replacement path");
+        }
+        var wrongRoom = Open();
+        Check(!wrongRoom.TryRebindCorePage(Room + 1, changed, 400), "page replacement cannot cross rooms");
+        Check(!wrongRoom.TryRebindCorePage(Room, changed, 999) && !wrongRoom.TryRebindCorePage(Room, changed, 0),
+            "replacement must match the stable displayed unit identity");
+        wrongRoom.Close();
+        Check(!wrongRoom.TryRebindCorePage(Room, changed, 400) && !wrongRoom.Valid, "late replacement never reopens a closed page");
+
+        var unavailableBinding = Open();
+        var unavailable = Snapshot(2);
+        unavailable.CoreBooksAvailable = false;
+        unavailable.CoreBooksReason = CoreBooksReason.PacketLimit;
+        unavailable.CoreBooks.Clear();
+        foreach (var deck in unavailable.UnitDecks) deck.BookToken = 0;
+        Check(unavailableBinding.TryUpdate(Room, unavailable) && unavailableBinding.CanEdit,
+            "core inventory downgrade preserves existing card editing without rebinding a different book");
+        var recovered = Snapshot(3);
+        Check(unavailableBinding.TryUpdate(Room, recovered) && unavailableBinding.CanEdit,
+            "complete core inventory recovery refreshes the existing card binding");
+    }
+
+    private static void ReplaceBook(ProgressSnapshot snapshot, int bookId, int instanceId, ulong token)
+    {
+        snapshot.UnitDecks[0].BookId = snapshot.CoreBooks[0].BookId = bookId;
+        snapshot.UnitDecks[0].BookInstanceId = snapshot.CoreBooks[0].BookInstanceId = instanceId;
+        snapshot.UnitDecks[0].BookToken = snapshot.CoreBooks[0].BookToken = token;
     }
 }

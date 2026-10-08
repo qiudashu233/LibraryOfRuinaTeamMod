@@ -13,5 +13,8 @@
     <Compile Include="../../src/RuinaCoop/DeckProtocol.cs" Link="DeckProtocol.cs" />
     <Compile Include="../../src/RuinaCoop/DeckAuthority.cs" Link="DeckAuthority.cs" />
     <Compile Include="../../src/RuinaCoop/DeckMirror.cs" Link="DeckMirror.cs" />
+    <Compile Include="../../src/RuinaCoop/EquipmentMirror.cs" Link="EquipmentMirror.cs" />
+    <Compile Include="../../src/RuinaCoop/EquipmentProtocol.cs" Link="EquipmentProtocol.cs" />
+    <Compile Include="../../src/RuinaCoop/EquipmentAuthority.cs" Link="EquipmentAuthority.cs" />
   </ItemGroup>
 </Project>

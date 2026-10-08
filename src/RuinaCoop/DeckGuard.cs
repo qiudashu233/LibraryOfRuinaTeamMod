@@ -322,6 +322,7 @@ namespace RuinaCoop
 
         private static bool UiEquipBookPrefix(object __instance)
         {
+            if (NativeEquipmentEditor.TryHandleCorePageClick(__instance)) return false;
             return Session == null || UiCurrentUnitPrefix() && UiBookFieldPrefix(__instance);
         }
 
