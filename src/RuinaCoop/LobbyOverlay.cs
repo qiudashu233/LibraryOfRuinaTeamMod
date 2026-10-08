@@ -16,6 +16,10 @@ namespace RuinaCoop
         private ProgressSnapshot _progress;
         private Vector2 _progressScroll;
         private Vector2 _claimScroll;
+        private Vector2 _deckScroll;
+        private readonly Dictionary<int, string> _cardNames = new Dictionary<int, string>();
+        private string _cardSearch = "";
+        private int _selectedDeckUnitIndex;
         private int _rightTab;
         private SteamId _hostId;
         private string _joinId = "";
@@ -75,11 +79,13 @@ namespace RuinaCoop
             {
                 _relay.Tick();
             }
+            NativeDeckEditor.Tick(_relay);
             _localSelfTest.Tick();
         }
 
         private void OnGUI()
         {
+            NativeDeckEditor.DrawSessionControls(_relay);
             if (!_visible)
             {
                 return;
@@ -187,7 +193,7 @@ namespace RuinaCoop
         private void DrawProgressPanel()
         {
             GUILayout.BeginArea(new Rect(500, 20, 550, 590), GUI.skin.box);
-            _rightTab = GUILayout.Toolbar(_rightTab, new[] { "Host progress", "Role claims" });
+            _rightTab = GUILayout.Toolbar(_rightTab, new[] { "Host progress", "Role claims", "Deck editor" });
             GUILayout.Label(_relay == null ? "Relay unavailable." : _relay.Status);
             if (_progress == null)
             {
@@ -211,6 +217,12 @@ namespace RuinaCoop
             if (_rightTab == 1)
             {
                 DrawClaimsPanel();
+                GUILayout.EndArea();
+                return;
+            }
+            if (_rightTab == 2)
+            {
+                DrawDeckPanel();
                 GUILayout.EndArea();
                 return;
             }
@@ -247,12 +259,15 @@ namespace RuinaCoop
 
         private void DrawClaimsPanel()
         {
-            GUILayout.Label("Reception preparation (planning only; no deck lock yet)");
+            // Host actions can synchronously replace _progress. Keep roster and
+            // owner indices from one snapshot for the whole IMGUI pass.
+            var snapshot = _progress;
+            GUILayout.Label("Reception preparation (planning only)");
             GUILayout.Label("Selected stage: " +
-                (_progress.SelectedStageId == 0 ? "none" : _progress.SelectedStageId.ToString()));
-            GUILayout.Label("Claim revision: " + _progress.ClaimRevision);
+                (snapshot.SelectedStageId == 0 ? "none" : snapshot.SelectedStageId.ToString()));
+            GUILayout.Label("Claim revision: " + snapshot.ClaimRevision);
             GUILayout.Label(_relay == null ? "Relay unavailable." : _relay.ClaimStatus);
-            if (_progress.SelectedStageId == 0)
+            if (snapshot.SelectedStageId == 0)
             {
                 GUILayout.Label("The host must choose a stage on the Host progress tab.");
                 return;
@@ -262,7 +277,7 @@ namespace RuinaCoop
             if (_isHost)
             {
                 GUILayout.Label("Host: choose one opened floor for this reception:");
-                foreach (var floor in _progress.Floors)
+                foreach (var floor in snapshot.Floors)
                 {
                     if (floor.Units.Count == 0)
                     {
@@ -277,9 +292,9 @@ namespace RuinaCoop
             }
 
             ProgressSnapshot.FloorEntry selected = null;
-            foreach (var floor in _progress.Floors)
+            foreach (var floor in snapshot.Floors)
             {
-                if ((byte)floor.Sephirah == _progress.SelectedFloorId)
+                if ((byte)floor.Sephirah == snapshot.SelectedFloorId)
                 {
                     selected = floor;
                     break;
@@ -296,10 +311,10 @@ namespace RuinaCoop
             var localId = SteamClient.SteamId.Value;
             for (var i = 0; i < selected.Units.Count; i++)
             {
-                var owner = _progress.ClaimOwners[i];
+                var owner = snapshot.ClaimOwners[i];
                 GUILayout.BeginHorizontal();
                 GUILayout.Label((i + 1) + ". " + selected.Units[i] + " — " + OwnerLabel(owner));
-                if (_relay != null && (owner == 0 || owner == localId))
+                if (_relay != null && !snapshot.DecksFrozen && (owner == 0 || owner == localId))
                 {
                     var action = owner == 0 ? ClaimAction.Claim : ClaimAction.Release;
                     if (GUILayout.Button(action.ToString(), GUILayout.Width(75)))
@@ -309,11 +324,134 @@ namespace RuinaCoop
                 }
                 GUILayout.EndHorizontal();
             }
-            if (_isHost && _relay != null && GUILayout.Button("Release claims of departed members"))
+            if (_isHost && _relay != null && !snapshot.DecksFrozen &&
+                GUILayout.Button("Release claims of disconnected members"))
             {
                 _relay.ReleaseAbsentClaims();
             }
             GUILayout.EndScrollView();
+        }
+
+        private void DrawDeckPanel()
+        {
+            GUILayout.Label("Host deck inventory (standard vanilla decks)");
+            GUILayout.Label(_relay == null ? "Relay unavailable." : _relay.DeckStatus);
+            if (_progress.SelectedFloorId == PrepClaims.NoFloor ||
+                _progress.UnitDecks.Count == 0)
+            {
+                GUILayout.Label("Choose a stage and floor on the other tabs first.");
+                return;
+            }
+            ProgressSnapshot.FloorEntry floor = null;
+            foreach (var candidate in _progress.Floors)
+            {
+                if ((byte)candidate.Sephirah == _progress.SelectedFloorId)
+                {
+                    floor = candidate;
+                    break;
+                }
+            }
+            if (floor == null)
+            {
+                GUILayout.Label("Waiting for selected floor data.");
+                return;
+            }
+            if (_selectedDeckUnitIndex >= floor.Units.Count)
+            {
+                _selectedDeckUnitIndex = 0;
+            }
+            GUILayout.Label("Floor " + floor.Sephirah + " | Deck revision " + _progress.DeckRevision);
+            for (var i = 0; i < floor.Units.Count; i++)
+            {
+                var label = (i == _selectedDeckUnitIndex ? "> " : "") +
+                    (i + 1) + ". " + floor.Units[i] + " — " + OwnerLabel(_progress.ClaimOwners[i]);
+                if (GUILayout.Button(label))
+                {
+                    _selectedDeckUnitIndex = i;
+                }
+            }
+            if (_selectedDeckUnitIndex >= _progress.UnitDecks.Count)
+            {
+                return;
+            }
+            var deck = _progress.UnitDecks[_selectedDeckUnitIndex];
+            var owner = _progress.ClaimOwners[_selectedDeckUnitIndex];
+            var mayEdit = owner != 0 && owner == SteamClient.SteamId.Value &&
+                !_progress.DecksFrozen && !deck.Fixed && !deck.MultiDeck &&
+                _relay != null && !_relay.DeckRequestPending;
+            if (_progress.DecksFrozen)
+            {
+                GUILayout.Label("Decks are frozen while a reception is in progress.");
+            }
+            GUILayout.Label(deck.Fixed || deck.MultiDeck
+                ? "This special key page is view only in this test build."
+                : owner == 0 ? "Claim this librarian before editing."
+                : mayEdit ? "You can edit this librarian's deck."
+                : "Only the claimant can edit this deck.");
+            GUILayout.Label("Deck cards: " + deck.Cards.Count + "/" + deck.Capacity);
+            _deckScroll = GUILayout.BeginScrollView(_deckScroll);
+            foreach (var cardId in deck.Cards.ToArray())
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(CardName(cardId) + " (#" + cardId + ")");
+                if (mayEdit && GUILayout.Button("Remove", GUILayout.Width(75)))
+                {
+                    _relay.RequestDeckEdit((byte)_selectedDeckUnitIndex, cardId, DeckAction.Remove);
+                    GUILayout.EndHorizontal();
+                    break;
+                }
+                GUILayout.EndHorizontal();
+            }
+            GUILayout.Label("Host-owned inventory (available copies):");
+            _cardSearch = GUILayout.TextField(_cardSearch ?? "", 64);
+            var shown = 0;
+            foreach (var card in _progress.CardStock)
+            {
+                var name = CardName(card.Id);
+                if (_cardSearch.Length != 0 &&
+                    name.IndexOf(_cardSearch, StringComparison.OrdinalIgnoreCase) < 0 &&
+                    card.Id.ToString().IndexOf(_cardSearch, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(name + " (#" + card.Id + ") x" + card.Count);
+                if (mayEdit && GUILayout.Button("Add", GUILayout.Width(75)))
+                {
+                    _relay.RequestDeckEdit((byte)_selectedDeckUnitIndex, card.Id, DeckAction.Add);
+                    GUILayout.EndHorizontal();
+                    break;
+                }
+                GUILayout.EndHorizontal();
+                shown++;
+                if (shown >= 50)
+                {
+                    GUILayout.Label("Showing first 50 matches. Narrow the search to see more.");
+                    break;
+                }
+            }
+            GUILayout.EndScrollView();
+        }
+
+        private string CardName(int cardId)
+        {
+            string name;
+            if (_cardNames.TryGetValue(cardId, out name))
+            {
+                return name;
+            }
+            try
+            {
+                var card = ItemXmlDataList.instance.GetCardItem(new LorId(cardId), false);
+                name = card == null || string.IsNullOrEmpty(card.Name)
+                    ? "Card " + cardId : card.Name;
+            }
+            catch (Exception)
+            {
+                name = "Card " + cardId;
+            }
+            _cardNames[cardId] = name;
+            return name;
         }
 
         private string OwnerLabel(ulong owner)
@@ -338,6 +476,7 @@ namespace RuinaCoop
         private void OnProgressSnapshot(ProgressSnapshot snapshot)
         {
             _progress = snapshot;
+            NativeDeckEditor.OnSnapshot(_relay, snapshot);
         }
 
         private void CreateRoom(bool isPublic)
@@ -537,6 +676,9 @@ namespace RuinaCoop
 
         private void LeaveRoom()
         {
+            // Restore temporary UI bindings while the guest save guards still
+            // apply. A room's late reply must never reopen an exited page.
+            NativeDeckEditor.Close();
             _localSelfTest.Stop();
             _localSelfTest = new LocalSelfTest();
             if (_relay != null)

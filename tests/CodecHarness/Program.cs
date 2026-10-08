@@ -30,7 +30,7 @@ for (var id = 103; id <= 235; id++)
         Id = id, Chapter = 7, State = StoryState.Open, Name = "接待 " + id + " - 테스트"
     });
 }
-for (var index = 1; index < 10; index++)
+for (var index = 2; index <= 10; index++)
 {
     var otherFloor = new ProgressSnapshot.FloorEntry
     {
@@ -75,7 +75,7 @@ rawInvalid.Stages.Add(new ProgressSnapshot.StageEntry
 Check(!ProgressSnapshot.TryDecode(rawInvalid.Encode(roomId), roomId, out _, out var invalidReason) &&
       invalidReason.Contains("repeats ID 101"), "duplicate stage diagnostics");
 var rawFloor = new LibraryFloorModel { Sephirah = SephirahType.Malkuth, Level = 6 };
-rawFloor.Units.Add(new UnitData { name = "罗兰" });
+rawFloor.Units.Add(new UnitDataModel { name = "罗兰" });
 LibraryModel.Instance.OpenedFloors.Add(rawFloor);
 LibraryModel.Instance.OpenedFloors.Add(rawFloor);
 StageClassInfoList.Instance.Stages.Add(new StageData
@@ -94,46 +94,52 @@ Check(ProgressSnapshot.TryDecode(captured.Encode(roomId), roomId, out var captur
     "captured snapshot passes receiver validation");
 var claims = new PrepClaims();
 claims.Reconcile(captured);
+DeckMirror.Capture(captured);
 Check(claims.SelectFloor(captured, (byte)SephirahType.Malkuth), "host selects an opened floor");
 captured = ProgressSnapshot.Capture(101);
 claims.Reconcile(captured);
+DeckMirror.Capture(captured);
 var firstRevision = claims.Revision;
 const ulong guestOne = 76561199548728145UL;
 const ulong guestTwo = 76561198377244747UL;
-Check(claims.Apply(guestOne, 101, 0, 0, firstRevision, ClaimAction.Claim) ==
+Check(claims.Apply(guestOne, 101, (byte)SephirahType.Malkuth, 0, firstRevision, ClaimAction.Claim) ==
       ClaimResultCode.Accepted, "first claim wins");
-Check(claims.Apply(guestTwo, 101, 0, 0, firstRevision, ClaimAction.Claim) ==
+Check(claims.Apply(guestTwo, 101, (byte)SephirahType.Malkuth, 0, firstRevision, ClaimAction.Claim) ==
       ClaimResultCode.StaleRevision, "simultaneous stale claim rejected");
-Check(claims.Apply(guestTwo, 101, 0, 0, claims.Revision, ClaimAction.Claim) ==
+Check(claims.Apply(guestTwo, 101, (byte)SephirahType.Malkuth, 0, claims.Revision, ClaimAction.Claim) ==
       ClaimResultCode.AlreadyClaimed, "claimed slot cannot be stolen");
-Check(claims.Apply(guestTwo, 101, 0, 0, claims.Revision, ClaimAction.Release) ==
+Check(claims.Apply(guestTwo, 101, (byte)SephirahType.Malkuth, 0, claims.Revision, ClaimAction.Release) ==
       ClaimResultCode.NotOwner, "other member cannot release claim");
 captured = ProgressSnapshot.Capture(101);
 claims.Reconcile(captured);
+DeckMirror.Capture(captured);
 Check(captured.ClaimOwners.Count == 1 && captured.ClaimOwners[0] == guestOne &&
       ProgressSnapshot.TryDecode(captured.Encode(roomId), roomId, out var claimedDecoded) &&
       claimedDecoded.ClaimOwners[0] == guestOne, "claim mirrored in snapshot");
-Check(claims.Apply(guestOne, 101, 0, 0, claims.Revision, ClaimAction.Release) ==
+Check(claims.Apply(guestOne, 101, (byte)SephirahType.Malkuth, 0, claims.Revision, ClaimAction.Release) ==
       ClaimResultCode.Accepted, "owner can release claim");
-Check(claims.Apply(guestTwo, 101, 0, 0, claims.Revision, ClaimAction.Claim) ==
+Check(claims.Apply(guestTwo, 101, (byte)SephirahType.Malkuth, 0, claims.Revision, ClaimAction.Claim) ==
       ClaimResultCode.Accepted, "released slot can be claimed again");
 Check(claims.ReleaseAbsent(id => id == guestOne), "host confirms departed member release");
 captured = ProgressSnapshot.Capture(101);
 claims.Reconcile(captured);
+DeckMirror.Capture(captured);
 Check(captured.ClaimOwners[0] == 0, "departed member slot cleared");
-Check(claims.Apply(guestOne, 101, 0, 0, claims.Revision, ClaimAction.Claim) ==
+Check(claims.Apply(guestOne, 101, (byte)SephirahType.Malkuth, 0, claims.Revision, ClaimAction.Claim) ==
       ClaimResultCode.Accepted, "claim after departed member cleanup");
-LibraryModel.Instance.OpenedFloors[0].Units[0] = new UnitData { name = "罗兰" };
+LibraryModel.Instance.OpenedFloors[0].Units[0] = new UnitDataModel { name = "罗兰" };
 captured = ProgressSnapshot.Capture(101);
 claims.Reconcile(captured);
+DeckMirror.Capture(captured);
 Check(captured.SelectedFloorId == PrepClaims.NoFloor && captured.ClaimOwners.Count == 0,
     "roster object change clears claims even when names match");
-Check(claims.SelectFloor(captured, 0), "floor can be selected again");
+Check(claims.SelectFloor(captured, (byte)SephirahType.Malkuth), "floor can be selected again");
 captured = ProgressSnapshot.Capture(0);
 claims.Reconcile(captured);
+DeckMirror.Capture(captured);
 Check(captured.SelectedFloorId == PrepClaims.NoFloor && captured.ClaimOwners.Count == 0,
     "changing stage clears floor and claims");
-var claimRequest = new ClaimRequest { RequestId = 4, StageId = 101, FloorId = 0,
+var claimRequest = new ClaimRequest { RequestId = 4, StageId = 101, FloorId = (byte)SephirahType.Malkuth,
     UnitIndex = 0, ExpectedRevision = 8, Action = ClaimAction.Claim };
 var requestPacket = ClaimProtocol.EncodeRequest(roomId, claimRequest);
 Check(ClaimProtocol.TryDecodeRequest(requestPacket, roomId, out var parsedRequest) &&
@@ -179,7 +185,9 @@ finally
 var alteredChallenge = (byte[])RelayAuth.ChallengePacket(challenge).Clone();
 alteredChallenge[alteredChallenge.Length - 1] = (byte)'Z';
 Check(!RelayAuth.TryReadChallenge(alteredChallenge, out _), "malformed challenge rejected");
-Console.WriteLine($"PASS: snapshot, claim authority, claim protocol, and lobby-auth checks; snapshot {packet.Length} bytes.");
+DeckChecks.Run(roomId, guestOne, guestTwo);
+DisplayChecks.Run(roomId);
+Console.WriteLine($"PASS: snapshot, claim/deck authority and protocols, and lobby-auth checks; snapshot {packet.Length} bytes.");
 if (args.Length == 1)
 {
     System.IO.File.WriteAllBytes(args[0], packet);
