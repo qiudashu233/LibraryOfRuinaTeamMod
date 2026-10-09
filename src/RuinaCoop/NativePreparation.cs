@@ -110,7 +110,7 @@ namespace RuinaCoop
                 if (info == null || info.id == null || !info.id.IsBasic() || info.id.id <= 0)
                 { value.Phase = PreparationPhase.Selection; value.ContextId = 0; Unavailable(value, PreparationReason.UnsupportedStage); return; }
                 value.StageId = info.id.id;
-                if (!info.IsNormalInvitation() || StageController.Instance.IsEndContents || info.stageType != StageType.Invitation)
+                if (!IsSupportedInvitation(info, StageController.Instance.IsEndContents))
                 { Unavailable(value, PreparationReason.UnsupportedStage); return; }
                 if (!snapshot.Stages.Exists(row => row.Id == value.StageId))
                 { Unavailable(value, PreparationReason.UnsupportedStage); return; }
@@ -191,15 +191,29 @@ namespace RuinaCoop
         }
         private static void Adopt(StageModel stage)
         { if (_nextContext == ulong.MaxValue) throw new InvalidOperationException("Reception context exhausted."); _nativeStage = stage; _context = ++_nextContext; InitializedFloors.Clear(); }
+        // IsNormalInvitation means a generic book-value invitation in vanilla;
+        // story receptions also use PrepareBattle and must be accepted here.
+        internal static bool IsSupportedInvitation(StageClassInfo info, bool endContents)
+        {
+            if (info == null || endContents || info.stageType != StageType.Invitation) return false;
+            var id = info.id;
+            return id != null && id.IsBasic() && id.id > 0 &&
+                !Enum.IsDefined(typeof(EndContentsStageId), id.id) && id.id != SpecialStageIds.olivier;
+        }
         private static void InitializeDefaultRoster()
         {
             var floor = StageController.Instance.GetCurrentStageFloorModel(); var wave = StageController.Instance.GetCurrentWaveModel();
             if (floor == null || wave == null || !InitializedFloors.Add(floor.Sephirah)) return;
-            var units = floor.GetUnitBattleDataList(); if (units.Any(row => row.IsAddedBattle)) return;
+            var units = floor.GetUnitBattleDataList();
             var remaining = wave.AvailableUnitNumber;
             // This is the host's explicit native preparation transition, never a capture/getter side effect.
+            // Init's added-list getter already selects one unit. Seed the full
+            // first-N default once per floor, then retain all later user choices.
             foreach (var unit in units)
-                if (remaining > 0 && !unit.isDead && !unit.isLocked && !unit.unitData.IsLockUnit()) { unit.IsAddedBattle = true; remaining--; }
+            {
+                unit.IsAddedBattle = remaining > 0 && !unit.isDead && !unit.isLocked && !unit.unitData.IsLockUnit();
+                if (unit.IsAddedBattle) remaining--;
+            }
         }
         private static bool InvitationPrefix() { return !InRoom || DeckGuard.Session.IsHost; }
         private static void PreparedPostfix()
@@ -304,6 +318,8 @@ namespace RuinaCoop
             NativeUi.Set(_uiData, "stage", StageClassInfoList.Instance.GetData(_displayed.Preparation.StageId));
             NativeUi.Set(_uiData, "sephirah", (SephirahType)_displayed.Preparation.FloorId);
             NativeUi.Call(_controller, "CallUIPhase", Enum.ToObject(GameType("UI.UIPhase"), 5));
+            Debug.Log("[RuinaCoop] Guest preparation opened: context " + _displayed.Preparation.ContextId +
+                ", stage " + _displayed.Preparation.StageId + ", floor " + _displayed.Preparation.FloorId + ".");
         }
         private static void CaptureRenderer()
         {
@@ -376,6 +392,13 @@ namespace RuinaCoop
                 NativeUi.Set(_uiData, "unit", _rosterModels.Units[_selectedUnit]);
                 RenderLibrarians(FindPanel("UI.UILibrarianCharacterListPanel")); RenderEnemies(FindPanel("UI.UIEnemyCharacterListPanel"));
                 var panel = FindPanel("UI.UIBattleSettingPanel");
+                // Guest OnOpen/OnUIPhaseEnter are replaced, so explicitly
+                // restore the ordinary preparation layout from any prior page.
+                Show(NativeUi.Get(panel, "CentralUIRoot"), true);
+                Show(NativeUi.Get(panel, "anim_CenterPanel"), true);
+                Show(NativeUi.Get(panel, "SephirahList"), true);
+                Put(NativeUi.Get(panel, "cg_NormalFrame"), "alpha", 1f);
+                Put(NativeUi.Get(panel, "cg_KeterCompleteOpenFrame"), "alpha", 0f);
                 Put(panel, "_sephirah", (SephirahType)prep.FloorId);
                 Text(NativeUi.Get(panel, "txt_enemyNametext"), StageNameXmlList.Instance.GetName(StageClassInfoList.Instance.GetData(prep.StageId)));
                 Text(NativeUi.Get(panel, "txt_AvailableUnitNumberText"), "出战 " + prep.Participants.Count(row => row.Participating) + "/" + prep.MaxUnits);
@@ -400,6 +423,9 @@ namespace RuinaCoop
             var list = NativeUi.Get(panel, "CharacterList"); var slots = (IList)NativeUi.Get(list, "slotList");
             if (_rosterModels.Units.Count > slots.Count) throw new InvalidOperationException("Native librarian list is too small.");
             var color = NativeUi.Call(NativeUi.Singleton("UI.UIColorManager"), "GetSephirahColor", (SephirahType)_displayed.Preparation.FloorId);
+            // The central preparation buttons represent the host's floors;
+            // these library buttons still refer to the guest's own save.
+            foreach (var button in (IList)NativeUi.Get(panel, "SephirahSelectionButtons")) Show(button, false);
             Put(list, "isSelectableList", true); Put(list, "currentSelectedSlot", slots[_selectedUnit]);
             for (var i = 0; i < slots.Count; i++)
             {
@@ -420,6 +446,10 @@ namespace RuinaCoop
         }
         private static void RenderEnemies(object panel)
         {
+            // Vanilla hides this canvas on Invitation and activates it on
+            // BattleSetting; replacing OnUpdatePhase must also activate it.
+            var canvas = NativeUi.Get(panel, "cg");
+            Put(canvas, "alpha", 1f); Put(canvas, "interactable", true); Put(canvas, "blocksRaycasts", true);
             if (_enemyModels != null) _enemyModels.Dispose(); _enemyModels = null; EnemyUnits.Clear();
             var wave = _displayed.Preparation.Waves[_wave]; var fake = new ProgressSnapshot { SelectedStageId = _displayed.Preparation.StageId, SelectedFloorId = 1 };
             var floor = new ProgressSnapshot.FloorEntry { Sephirah = SephirahType.Malkuth }; fake.Floors.Add(floor);

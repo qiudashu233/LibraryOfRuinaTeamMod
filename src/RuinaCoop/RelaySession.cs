@@ -926,7 +926,7 @@ namespace RuinaCoop
                 Status = "Sharing host progress with " + _guests.Count + " guest(s).";
                 Debug.Log("[RuinaCoop] Progress snapshot " + snapshot.Sequence + ": " +
                     snapshot.Stages.Count + " stages, " + snapshot.Floors.Count +
-                    " floors, " + packet.Length + " bytes; local decode PASS; " + CoreInventorySummary(snapshot) +
+                    " floors, " + packet.Length + " bytes; local decode PASS; " + PreparationSummary(snapshot) + CoreInventorySummary(snapshot) +
                     (snapshot.PassivesAvailable ? " passive books " + snapshot.PassiveBooks.Count + "." :
                     " passive inventory unavailable: " + snapshot.PassivesReason + "."));
                 return true;
@@ -951,6 +951,16 @@ namespace RuinaCoop
                 Status = nextStatus;
                 return false;
             }
+        }
+
+        private static string PreparationSummary(ProgressSnapshot snapshot)
+        {
+            var prep = snapshot.Preparation;
+            var participants = 0;
+            foreach (var row in prep.Participants) if (row.Participating) participants++;
+            return "preparation " + prep.Phase + "/" + (prep.Available ? "Available" : prep.Reason.ToString()) +
+                ", context " + prep.ContextId + ", stage " + prep.StageId + ", floor " + prep.FloorId +
+                ", participants " + participants + "/" + prep.MaxUnits + ". ";
         }
 
         private static string CoreInventorySummary(ProgressSnapshot snapshot)
@@ -1329,7 +1339,7 @@ namespace RuinaCoop
                 if (_deferredReadyReply.HasValue) CompletePreparationReadyReply(_deferredReadyReply.Value);
                 Status = "Host progress received: " + snapshot.Stages.Count + " stages, " +
                     snapshot.Floors.Count + " floors.";
-                Debug.Log("[RuinaCoop] Received host progress snapshot " + snapshot.Sequence + ".");
+                Debug.Log("[RuinaCoop] Received host progress snapshot " + snapshot.Sequence + "; " + PreparationSummary(snapshot));
             });
         }
 

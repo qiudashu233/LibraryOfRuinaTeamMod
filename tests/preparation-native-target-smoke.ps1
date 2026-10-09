@@ -1,5 +1,5 @@
 ﻿# Read-only game metadata and pure compiled input identity checks. No Unity,
-# native reception/model constructors, Steam, inventory, tasks, or saves execute.
+# native reception/model initialization, Steam, inventory, tasks, or saves execute.
 param(
     [string]$GameDir = 'D:\game\steamapps\common\Library Of Ruina',
     [string]$ModAssembly = (Join-Path $PSScriptRoot '..\src\RuinaCoop\bin\Release\net46\RuinaCoop.dll'),
@@ -84,11 +84,14 @@ foreach($row in @(
     @('UI.UIBattleSettingPanel','_sephirah','SephirahType'),@('UI.UIBattleSettingPanel','currentSephirahButton','UI.UISephirahButton'),@('UI.UIBattleSettingPanel','infoRightPanel','UI.UIBattleSettingLibrarianInfoPanel'),@('UI.UIBattleSettingPanel','infoLeftPanel','UI.UIBattleSettingLibrarianInfoPanel'),
     @('UI.UIBattleSettingPanel','txt_enemyNametext'),@('UI.UIBattleSettingPanel','txt_AvailableUnitNumberText'),@('UI.UIBattleSettingPanel','txt_FloorText'),@('UI.UIBattleSettingPanel','txt_WaveButtonText'),
     @('UI.UIBattleSettingPanel','SephirahButtons'),@('UI.UIBattleSettingPanel','waveList'),@('UI.UIBattleSettingPanel','_editPanel'),@('UI.UIBattleSettingPanel','currentAvailbleUnitslots'),
+    @('UI.UIBattleSettingPanel','CentralUIRoot','UnityEngine.GameObject'),@('UI.UIBattleSettingPanel','anim_CenterPanel','UnityEngine.Animator'),@('UI.UIBattleSettingPanel','SephirahList','UnityEngine.GameObject'),
+    @('UI.UIBattleSettingPanel','cg_NormalFrame','UnityEngine.CanvasGroup'),@('UI.UIBattleSettingPanel','cg_KeterCompleteOpenFrame','UnityEngine.CanvasGroup'),
     @('UI.UISephirahButton','sephirahType','SephirahType'),@('UI.UISephirahButton','selectable','UI.UICustomSelectable'),
     @('UI.UICharacterListPanel','CharacterList','UI.UICharacterList'),@('UI.UICharacterList','slotList'),@('UI.UICharacterList','isSelectableList','System.Boolean'),@('UI.UICharacterList','currentSelectedSlot','UI.UICharacterSlot'),
     @('UI.UICharacterSlot','unitData','UnitDataModel'),@('UI.UICharacterSlot','_unitBattleData','UnitBattleDataModel'),@('UI.UICharacterSlot','isEmptySlot','System.Boolean'),@('UI.UICharacterSlot','isToggleActive','System.Boolean'),@('UI.UICharacterSlot','_isToggleSelected','System.Boolean'),@('UI.UICharacterSlot','toggleRoot','UnityEngine.GameObject'),@('UI.UICharacterSlot','portraitImage'),
     @('UI.UIEnemyCharacterListPanel','currentWave','System.Int32'),@('UI.UIEnemyCharacterListPanel','currentEnemyStageinfo','StageClassInfo'),@('UI.UIEnemyCharacterListPanel','StageEnemyListObject','UnityEngine.GameObject'),
     @('UI.UILibrarianCharacterListPanel','ob_tutorialhighlightedFrame','UnityEngine.GameObject'),
+    @('UI.UILibrarianCharacterListPanel','SephirahSelectionButtons','System.Collections.Generic.List`1[[UI.UISephirahSelectionButton, Assembly-CSharp, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null]]'),
     @('UI.UIBattleSettingLibrarianInfoPanel','unitdata','UnitDataModel'),@('UI.UIBattleSettingLibrarianInfoPanel','txt_BookName'),@('UI.UIBattleSettingLibrarianInfoPanel','StatsInfo','UI.UICharacterStatInfoPanel'),
     @('UI.UIBattleSettingLibrarianInfoPanel','passiveSlotsPanel','UI.UISetInfoSlotListSc'),@('UI.UIBattleSettingLibrarianInfoPanel','equipedCardListPanel','UI.UIEquipCardList'),
     @('UI.UIBattleSettingLibrarianInfoPanel','toggle_ReleaseToggle'),@('UI.UIBattleSettingLibrarianInfoPanel','img_Unknown'),@('UI.UIBattleSettingLibrarianInfoPanel','portrait'),@('UI.UIBattleSettingLibrarianInfoPanel','cg'),@('UI.UIBattleSettingLibrarianInfoPanel','img_BookIcon','UnityEngine.UI.Image'),@('UI.UIBattleSettingLibrarianInfoPanel','img_BookIconGlow','UnityEngine.UI.Image'),
@@ -108,6 +111,9 @@ foreach($spec in @(
 )){Get-PrepMethod $spec[0] $spec[1] $spec[2]|Out-Null}
 Assert-Prep ((Get-PrepType 'UI.UIColorManager').GetProperty('EnemyUIColor',$prepFlags)-ne$null) 'Enemy coloring property exists'
 foreach($spec in @(@('UI.UIPanel','IsActivated',[bool]),@('UnityEngine.UI.RawImage','texture',(Get-PrepType 'UnityEngine.Texture')),@('UnityEngine.CanvasGroup','alpha',[single]))){$p=(Get-PrepType $spec[0]).GetProperty($spec[1],$prepFlags);Assert-Prep ($p-and$p.CanRead-and$p.CanWrite-and$p.PropertyType-eq$spec[2]) "Restorable native property: $($spec[0]).$($spec[1])"}
+foreach($name in @('interactable','blocksRaycasts')){$p=(Get-PrepType 'UnityEngine.CanvasGroup').GetProperty($name,$prepFlags);Assert-Prep ($p-and$p.CanRead-and$p.CanWrite-and$p.PropertyType-eq[bool]) "Restorable enemy-canvas property: $name"}
+$enemyCanvas=(Get-PrepType 'UI.UIEnemyCharacterListPanel').GetProperty('cg',$prepFlags)
+Assert-Prep ($enemyCanvas-and$enemyCanvas.CanRead-and$enemyCanvas.PropertyType-eq(Get-PrepType 'UnityEngine.CanvasGroup')) 'Enemy list inherits the real native canvas property'
 foreach($name in @('bookIcon','bookIconGlow')){Assert-Prep ((Get-PrepType 'BookModel').GetProperty($name,$prepFlags).PropertyType-eq(Get-PrepType 'UnityEngine.Sprite')) "Static core-page display property: $name"}
 Assert-Prep ((Get-PrepType 'UnityEngine.UI.Image').GetProperty('sprite',$prepFlags).CanWrite) 'Original book icon image accepts a sprite'
 function Calls($Method,[string]$Name){return ,@($Method.Body.Instructions|Where-Object {$_.OpCode.Name-in@('call','callvirt')-and$_.Operand.Name-eq$Name})}
@@ -117,6 +123,85 @@ Assert-Prep ((Calls $capture 'GetUnitBattleDataList').Count-eq1) 'Capture reads 
 Assert-Prep ((Calls $capture 'GetUnitAddedBattleDataList').Count-eq0) 'Capture never auto-selects through added-list getter'
 Assert-Prep ((Calls $capture 'GetAvailableFloorList').Count-eq1) 'Capture uses native challenge-floor limits'
 Assert-Prep ((Calls $capture 'CaptureDisplay').Count-eq1) 'Enemy capture uses actual host display metadata'
+$supported=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'IsSupportedInvitation'
+Assert-Prep ((Calls $capture 'IsSupportedInvitation').Count-eq1-and(Calls $capture 'IsNormalInvitation').Count-eq0) 'Capture uses reception support instead of the general-invitation achievement predicate'
+Assert-Prep ($null-ne$supported) 'Compiled invitation support predicate exists'
+Assert-Prep ((Calls $supported 'IsNormalInvitation').Count-eq0) 'Fixed mainline support is independent of general-invitation status'
+Assert-Prep (@($supported.Body.Instructions|Where-Object {$_.OpCode.Name-in@('stfld','stsfld')}).Count-eq0) 'Invitation support predicate never mutates game metadata'
+$normal=(Get-PrepCecilType 'StageClassInfo').Methods|Where-Object Name -eq 'IsNormalInvitation'
+foreach($field in @('invitationInfo','combine','isStageFixedNormal')){
+    Assert-Prep (@($normal.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldfld'-and$_.Operand.Name-eq$field}).Count-eq1) "Vanilla general-invitation predicate reads $field"
+}
+Assert-Prep (@($normal.Body.Instructions|Where-Object {$_.OpCode.Name-in@('call','callvirt','newobj','stfld','stsfld')}).Count-eq0) 'Vanilla general-invitation predicate is safe for metadata-only regression fixtures'
+Assert-Prep (@($normal.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldc.i4.2'}).Count-eq1) 'Vanilla general-invitation predicate compares BookValue (2), not StageType.Invitation (0)'
+# Execute the production predicate against real game metadata shapes. The only
+# game constructor reached is the audited LorId value constructor, with a nonnull
+# workshop ID; no StageModel, Unity API, singleton, inventory or save is involved.
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using System.Runtime.Serialization;
+public static class RuinaPreparationInvitationChecks
+{
+    private const BindingFlags Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+    public static string[] Run(Type bridge, Type stageType, Type invitationType)
+    {
+        MethodInfo supported = bridge.GetMethod("IsSupportedInvitation", Flags), normal = stageType.GetMethod("IsNormalInvitation", Flags);
+        List<string> checks = new List<string>();
+        object recipe = Fixture(stageType, invitationType, 2, "", 0, 1, false);
+        Check(!(bool)normal.Invoke(recipe, null), "Real fixed BookRecipe mainline is not a vanilla general invitation", checks);
+        Check((bool)supported.Invoke(null, new object[] { recipe, false }), "Fixed BookRecipe mainline remains a supported reception", checks);
+        object special = Fixture(stageType, invitationType, 10001, "", 0, 0, false);
+        Check(!(bool)normal.Invoke(special, null), "Real fixed BookSpecial mainline is not a vanilla general invitation", checks);
+        Check((bool)supported.Invoke(null, new object[] { special, false }), "Fixed BookSpecial mainline remains a supported reception", checks);
+        object general = Fixture(stageType, invitationType, 100001, "", 0, 2, false);
+        Check((bool)normal.Invoke(general, null), "Real BookValue general invitation returns true", checks);
+        Check((bool)supported.Invoke(null, new object[] { general, false }), "General BookValue reception remains supported", checks);
+        object fixedNormal = Fixture(stageType, invitationType, 40001, "", 0, 1, true);
+        Check((bool)normal.Invoke(fixedNormal, null), "Vanilla fixed-normal override returns true", checks);
+        Check((bool)supported.Invoke(null, new object[] { fixedNormal, false }), "Fixed-normal reception remains supported", checks);
+        foreach (object info in new object[] { recipe, special, general, fixedNormal })
+            Check(!(bool)supported.Invoke(null, new object[] { info, true }), "End-content guard rejects invitation recipe " + stageType.GetField("_id", Flags).GetValue(info), checks);
+        Type endContentsIds = stageType.Assembly.GetType("EndContentsStageId", true);
+        foreach (object id in Enum.GetValues(endContentsIds))
+            Check(!(bool)supported.Invoke(null, new object[] { Fixture(stageType, invitationType, Convert.ToInt32(id), "", 0, 1, false), false }), "Special end-content stage is rejected even before end-content flag: " + id, checks);
+        int olivier = Convert.ToInt32(stageType.Assembly.GetType("SpecialStageIds", true).GetField("olivier", Flags).GetRawConstantValue());
+        Check(!(bool)supported.Invoke(null, new object[] { Fixture(stageType, invitationType, olivier, "", 0, 1, false), false }), "Olivier encounter with replaced librarian roster is rejected", checks);
+        foreach (int id in new int[] { 50009, 30008, 30005, 40008, 50013, 50014 })
+            Check((bool)supported.Invoke(null, new object[] { Fixture(stageType, invitationType, id, "", 0, 1, false), false }), "Ordinary boss reception passes metadata classification before actual roster validation: " + id, checks);
+        Check(!(bool)supported.Invoke(null, new object[] { Fixture(stageType, invitationType, 2, "", 1, 1, false), false }), "Creature encounter is rejected", checks);
+        Check(!(bool)supported.Invoke(null, new object[] { Fixture(stageType, invitationType, 2, "workshop-test", 0, 1, false), false }), "Workshop stage identity is rejected", checks);
+        foreach (int id in new int[] { 0, -1 })
+            Check(!(bool)supported.Invoke(null, new object[] { Fixture(stageType, invitationType, id, "", 0, 1, false), false }), "Invalid native stage identity is rejected: " + id, checks);
+        Check(!(bool)supported.Invoke(null, new object[] { null, false }), "Missing stage metadata is rejected", checks);
+        return checks.ToArray();
+    }
+    private static object Fixture(Type stageType, Type invitationType, int id, string package, int stageKind, int combine, bool fixedNormal)
+    {
+        object info = FormatterServices.GetUninitializedObject(stageType), invitation = FormatterServices.GetUninitializedObject(invitationType);
+        stageType.GetField("_id", Flags).SetValue(info, id);
+        stageType.GetField("workshopID", Flags).SetValue(info, package);
+        FieldInfo kind = stageType.GetField("stageType", Flags), recipe = invitationType.GetField("combine", Flags);
+        kind.SetValue(info, Enum.ToObject(kind.FieldType, stageKind)); recipe.SetValue(invitation, Enum.ToObject(recipe.FieldType, combine));
+        stageType.GetField("invitationInfo", Flags).SetValue(info, invitation);
+        stageType.GetField("isStageFixedNormal", Flags).SetValue(info, fixedNormal);
+        return info;
+    }
+    private static void Check(bool valid, string name, List<string> checks)
+    { if (!valid) throw new InvalidOperationException(name); checks.Add(name); }
+}
+'@
+foreach($check in [RuinaPreparationInvitationChecks]::Run($bridge,(Get-PrepType 'StageClassInfo'),(Get-PrepType 'StageInvitationInfo'))){Assert-Prep $true $check}
+$defaultRoster=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'InitializeDefaultRoster'
+Assert-Prep ((Calls $defaultRoster 'Any').Count-eq0) 'First preparation selection is not skipped because native initialization already selected one librarian'
+Assert-Prep ((Calls $defaultRoster 'get_AvailableUnitNumber').Count-eq1-and(Calls $defaultRoster 'set_IsAddedBattle').Count-eq1) 'First preparation selects eligible librarians using the actual reception limit'
+Assert-Prep ((Calls $defaultRoster 'Add').Count-eq1-and(Calls $defaultRoster 'Add')[0].Offset-lt(Calls $defaultRoster 'set_IsAddedBattle')[0].Offset) 'Per-floor initialization guard precedes roster writes and preserves later player selections'
+Assert-Prep ((Calls $capture 'InitializeDefaultRoster').Count-eq0) 'Snapshot capture never initializes or resets participation'
+foreach($name in @('PreparedPostfix','FloorPostfix','TrySelectNativeFloor')){
+    $method=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq $name
+    Assert-Prep ((Calls $method 'InitializeDefaultRoster').Count-eq1-and(Calls $method 'get_IsHost').Count-ge1) "Roster initialization stays in explicit host transition: $name"
+}
 foreach($name in @('Render','RenderLibrarians','RenderEnemies','RenderProfile','OpenedPrefix','ClosedPrefix','EnteredPrefix')){
     $method=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq $name
     foreach($unsafe in @('PrepareBattle','InitStageByInvitation','Init','ApplyPassiveSuccession','SavePlayData','OnSendInvitation','UnlockAchievement','GetUnitAddedBattleDataList')){Assert-Prep ((Calls $method $unsafe).Count-eq0) "Guest $name does not call $unsafe"}
@@ -128,6 +213,28 @@ $calls=@($nativeConfirm.Body.Instructions|Where-Object {$_.OpCode.Name-in@('call
 Assert-Prep (($calls|Where-Object {$_.Operand.Name-eq'OnSendInvitation'})[0].Offset-lt($calls|Where-Object {$_.Operand.Name-eq'PrepareBattle'})[0].Offset) 'Invitation must be blocked before quest start'
 $close=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'Close'
 Assert-Prep ((Calls $close 'PrepareBattle').Count-eq0-and(Calls $close 'get_GuestProjectionGuard').Count-eq0) 'Close restores UI without reception initialization'
+$put=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'Put'
+$show=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'Show'
+Assert-Prep ((Calls $put 'Remember')[0].Offset-lt(Calls $put 'Set')[0].Offset) 'Every projected canvas property is captured before modification'
+Assert-Prep ((Calls $show 'Add')[0].Offset-lt(Calls $show 'SetActive')[0].Offset) 'Every projected object visibility is captured before modification'
+Assert-Prep ((Calls $close 'Set').Count-ge1-and(Calls $close 'SetActive').Count-ge1) 'Close restores projected properties and object visibility'
+function Routed-PrepMutation($Method,[string]$Name,[string]$Sink){
+    foreach($str in @($Method.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldstr'-and$_.Operand-eq$Name})){
+        for($i=$Method.Body.Instructions.IndexOf($str)+1;$i-lt$Method.Body.Instructions.Count;$i++){
+            $instruction=$Method.Body.Instructions[$i]
+            if($instruction.OpCode.Name-in@('call','callvirt')-and$instruction.Operand.DeclaringType.FullName-eq'RuinaCoop.NativePreparation'){if($instruction.Operand.Name-eq$Sink){return $true};break}
+        }
+    }
+    return $false
+}
+$renderEnemies=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'RenderEnemies'
+foreach($name in @('alpha','interactable','blocksRaycasts')){Assert-Prep (Routed-PrepMutation $renderEnemies $name 'Put') "Enemy projection restores active canvas through recorded property: $name"}
+$renderGuest=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'Render'
+foreach($name in @('CentralUIRoot','anim_CenterPanel','SephirahList')){Assert-Prep (Routed-PrepMutation $renderGuest $name 'Show') "Guest preparation restores native visible layout through recorded object: $name"}
+foreach($name in @('cg_NormalFrame','cg_KeterCompleteOpenFrame')){Assert-Prep (Routed-PrepMutation $renderGuest $name 'Put') "Guest preparation records normal/special frame projection: $name"}
+$renderLibrarians=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'RenderLibrarians'
+Assert-Prep (Routed-PrepMutation $renderLibrarians 'SephirahSelectionButtons' 'Show') 'Guest library floor buttons are hidden through recorded visibility'
+foreach($name in @('Render','RenderLibrarians','RenderEnemies')){$method=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq $name;Assert-Prep ((Calls $method 'ChangeFrameByKeterCompleteOpen').Count-eq0) "Detached $name cannot enter local special-frame routing"}
 $closed=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'ClosedPrefix'
 Assert-Prep ((Calls $closed 'get_GuestProjectionGuard').Count-eq1) 'Guest OnClose remains isolated during cleanup'
 $return=(Get-PrepCecilType 'RuinaCoop.NativePreparation').Methods|Where-Object Name -eq 'ReturnFromEditor'

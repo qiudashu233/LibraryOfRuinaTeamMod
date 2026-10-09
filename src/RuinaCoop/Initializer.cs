@@ -34,7 +34,7 @@ namespace RuinaCoop
                 overlayObject.AddComponent<LobbyOverlay>();
                 Debug.Log("[RuinaCoop] Stage 1 lobby overlay ready.");
                 _initialized = true;
-                Debug.Log("[RuinaCoop] Stage 0 bootstrap loaded; game hash verified; Harmony patch registered.");
+                Debug.Log("[RuinaCoop] Stage 0 bootstrap loaded; game hash verified; Harmony patch registered; protocol v" + ProtocolInfo.Version + ".");
             }
             catch (Exception exception)
             {

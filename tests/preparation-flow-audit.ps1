@@ -73,6 +73,7 @@ try {
         @('UnitBattleDataModel','get_IsAddedBattle','System.Boolean',@()),
         @('UnitDataModel','IsLockUnit','System.Boolean',@()),
         @('StageClassInfo','get_currentState','UI.StoryState',@()),
+        @('StageClassInfo','IsNormalInvitation','System.Boolean',@()),
         @('UI.UIBattleSettingPanel','OnUIPhaseEnter','System.Void',@('UI.UIPhase')),
         @('UI.UIBattleSettingPanel','OnUIPhaseExit','System.Void',@('UI.UIPhase')),
         @('UI.UIBattleSettingPanel','OnClose','System.Void',@()),
@@ -80,6 +81,8 @@ try {
         @('UI.UIEnemyCharacterListPanel','SetEnemyWave','System.Void',@('System.Int32')),
         @('UI.UIEnemyCharacterListPanel','ChangeEnemyWave','System.Void',@('System.Int32')),
         @('UI.UIEnemyCharacterListPanel','SetEnemyWaveInBattleSetting','System.Void',@()),
+        @('UI.UIEnemyCharacterListPanel','Activate','System.Void',@('System.Boolean')),
+        @('UI.UIEnemyCharacterListPanel','OnUpdatePhase','System.Void',@()),
         @('UI.UIEnemyCharacterListPanel','SetEnemyCharacterListPanel','System.Void',@('System.Collections.Generic.List`1<UnitDataModel>','System.Boolean')),
         @('UI.UICharacterSlot','SetSlot','System.Void',@('UnitDataModel','UnityEngine.Color','System.Boolean')),
         @('UI.UICharacterSlot','SetUnknownSlot','System.Void',@()),
@@ -108,6 +111,14 @@ try {
     Assert-Flow ((Flow-Calls $prepare 'InitStageByInvitation').Count -eq 1) 'PrepareBattle initializes the real host reception'
     Assert-Flow ((Flow-Calls $prepare 'GetClearCount').Count -gt 0 -and (Flow-Calls $prepare 'GetStartStory').Count -gt 0) 'PrepareBattle chooses its story using local clear history'
     Assert-Flow ((Flow-Calls $prepare 'SavePlayData').Count -eq 0) 'PrepareBattle has no direct SavePlayData call; its navigation callbacks require separate review'
+    $normalInvitation = $methods['StageClassInfo.IsNormalInvitation']
+    foreach ($field in @('invitationInfo','combine','isStageFixedNormal')) {
+        Assert-Flow ((Flow-Fields $normalInvitation 'ldfld' $field).Count -eq 1) "Vanilla general-invitation classification reads $field"
+    }
+    Assert-Flow ((Flow-Fields $normalInvitation 'ldfld' 'stageType').Count -eq 0 -and
+        @($normalInvitation.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldc.i4.2' }).Count -eq 1) 'IsNormalInvitation classifies BookValue recipes, not every fixed mainline reception'
+    Assert-Flow (((Flow-Type 'StageCombineType').Fields | Where-Object Name -eq BookValue).Constant -eq 2 -and
+        ((Flow-Type 'StageType').Fields | Where-Object Name -eq Invitation).Constant -eq 0) 'General-invitation recipe and invitation stage kind use different enums'
     Assert-Flow ((Flow-Calls $methods['StageController.InitCommon'] 'OnStageStart').Count -eq 1) 'InitCommon starts a real library quest'
     Assert-Flow ((Flow-Calls $methods['StageController.InitStageByInvitation'] 'RemoveBook').Count -eq 0) 'Invitation initialization does not directly consume dropped books'
     Assert-Flow ((Flow-Calls $methods['StageModel.Init'] 'GetOpenedFloorList').Count -eq 1) 'Stage initialization uses the real library floors'
@@ -141,6 +152,14 @@ try {
     Assert-Flow ((Flow-Calls $preview 'SystemRange').Count -ge 1) 'Static enemy preview can re-randomize a core page'
     Assert-Flow ((Flow-Calls $preview 'GetChapter').Count -eq 1 -and (Flow-Calls $preview 'get_currentState').Count -gt 0 -and (Flow-Calls $preview 'InitNotClearEnemyList').Count -gt 0) 'Static future-wave visibility checks host chapter and clear state and uses unknown placeholders'
     Assert-Flow ((Flow-Calls $methods['UI.UIEnemyCharacterListPanel.ChangeEnemyWave'] 'SetEnemyWave').Count -eq 1) 'Manual wave selection uses the static visibility/randomization path'
+    $activateEnemy = $methods['UI.UIEnemyCharacterListPanel.Activate']
+    foreach ($property in @('set_alpha','set_interactable','set_blocksRaycasts')) {
+        Assert-Flow ((Flow-Calls $activateEnemy $property).Count -eq 1) "Original enemy Activate writes $property"
+    }
+    $enemyUpdate = $methods['UI.UIEnemyCharacterListPanel.OnUpdatePhase']
+    $enemyActivateCalls = Flow-Calls $enemyUpdate 'Activate'
+    Assert-Flow ($enemyActivateCalls.Count -eq 2 -and $enemyActivateCalls[0].Previous.OpCode.Name -eq 'ldc.i4.1' -and
+        $enemyActivateCalls[1].Previous.OpCode.Name -eq 'ldc.i4.0') 'Original enemy phase update explicitly enables preparation canvas and disables invitation canvas'
     Assert-Flow ((Flow-Calls $methods['UI.UIEnemyCharacterListPanel.SetEnemyWaveInBattleSetting'] 'GetCurrentWaveModel').Count -eq 1) 'Automatic preparation preview reads the initialized current wave'
     $battleSlot = $methods['UI.UICharacterSlot.SetBattleCharacter']
     Assert-Flow ((Flow-Calls $battleSlot 'get_currentState').Count -eq 1 -and (Flow-Fields $battleSlot 'ldfld' 'isUnknownBattleSetting').Count -eq 1) 'Current-wave unknown decision combines host clear state with the real enemy unknown flag'
@@ -168,6 +187,25 @@ try {
     Assert-Flow ((Flow-Calls $methods['UI.UIController.OnClickGameStart'] 'StartBg').Count -eq 1) 'OnClickGameStart is a zero-argument animation entry'
     Assert-Flow ((Flow-Calls $methods['UI.UIBattleSettingPanel.OnClickBattleStart'] 'StartLightSpread').Count -eq 1) 'Start button has a separate special-final-stage animation branch'
     $prepMod = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Resolve-Path -LiteralPath $ModAssembly).ProviderPath)
+    $preparation = $prepMod.MainModule.Types | Where-Object FullName -eq 'RuinaCoop.NativePreparation'
+    Assert-Flow ($null -ne $preparation) 'Compiled native preparation bridge exists'
+    $capture = $preparation.Methods | Where-Object Name -eq Capture
+    Assert-Flow ((Flow-Calls $capture 'IsSupportedInvitation').Count -eq 1 -and
+        (Flow-Calls $capture 'IsNormalInvitation').Count -eq 0) 'Capture supports fixed mainline invitations without the general-invitation achievement filter'
+    $support = $preparation.Methods | Where-Object Name -eq IsSupportedInvitation
+    Assert-Flow ($null -ne $support -and $support.ReturnType.FullName -eq 'System.Boolean' -and
+        $support.Parameters.Count -eq 2 -and $support.Parameters[0].ParameterType.FullName -eq 'StageClassInfo' -and
+        $support.Parameters[1].ParameterType.FullName -eq 'System.Boolean') 'Compiled invitation support accepts explicit stage metadata and end-content state'
+    Flow-NoPersistentCalls $support 'Invitation support classification'
+    Assert-Flow ((Flow-Fields $support 'ldfld' 'stageType').Count -eq 1 -and
+        (Flow-Calls $support 'IsBasic').Count -eq 1 -and (Flow-Calls $support 'IsNormalInvitation').Count -eq 0) 'Support retains native invitation identity/type guards without the recipe filter'
+    $defaultRoster = $preparation.Methods | Where-Object Name -eq InitializeDefaultRoster
+    Assert-Flow ((Flow-Calls $defaultRoster 'Any').Count -eq 0 -and
+        (Flow-Calls $defaultRoster 'get_AvailableUnitNumber').Count -eq 1 -and
+        (Flow-Calls $defaultRoster 'set_IsAddedBattle').Count -eq 1) 'Explicit initial host selection fills the native limit despite the native added-list default'
+    Assert-Flow ((Flow-Calls $defaultRoster 'Add').Count -eq 1 -and
+        (Flow-Calls $defaultRoster 'Add')[0].Offset -lt (Flow-Calls $defaultRoster 'set_IsAddedBattle')[0].Offset) 'Only the first explicit preparation visit per floor initializes participation'
+    Assert-Flow ((Flow-Calls $capture 'InitializeDefaultRoster').Count -eq 0) 'Repeated snapshot capture cannot silently reselect librarians'
     $guard = $prepMod.MainModule.Types | Where-Object FullName -eq 'RuinaCoop.DeckGuard'
     Assert-Flow ($null -ne $guard) 'Compiled DeckGuard exists'
     $install = $guard.Methods | Where-Object Name -eq Install
