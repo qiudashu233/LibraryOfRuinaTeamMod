@@ -9,5 +9,6 @@
     <Compile Include="../../src/RuinaCoop/PreparationState.cs" Link="PreparationState.cs" />
     <Compile Include="../../src/RuinaCoop/PreparationMirror.cs" Link="PreparationMirror.cs" />
     <Compile Include="../../src/RuinaCoop/PreparationProtocol.cs" Link="PreparationProtocol.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationLifecycle.cs" Link="PreparationLifecycle.cs" />
   </ItemGroup>
 </Project>

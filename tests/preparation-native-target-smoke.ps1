@@ -43,9 +43,10 @@ function Get-PrepField([string]$Type,[string]$Name,[string]$Shape='') {
 }
 $prepTargets=New-Object 'System.Collections.Generic.List[object]'
 function Target([string]$Type,[string]$Method,[string[]]$Parameters,[string]$Prefix,[string]$Postfix='') {$prepTargets.Add([pscustomobject]@{Type=$Type;Method=$Method;Parameters=$Parameters;Prefix=$Prefix;Postfix=$Postfix})}
-Target 'UI.UIController' 'PrepareBattle' @('StageClassInfo','System.Collections.Generic.List`1[[DropBookXmlInfo, Assembly-CSharp]]') 'InvitationPrefix' 'PreparedPostfix'
+Target 'UI.UIController' 'PrepareBattle' @('StageClassInfo','System.Collections.Generic.List`1[[DropBookXmlInfo, Assembly-CSharp]]') 'PreparingPrefix' 'PreparedPostfix'
 foreach($name in @('SendInvitation','ConfirmSendInvitation')){Target 'UI.UIInvitationRightMainPanel' $name @() 'InvitationPrefix'}
-Target 'UI.UIController' 'BackBattlePrepare' @() 'BackPrefix' 'BackPostfix'
+Target 'UI.UIController' 'BackBattlePrepare' @() 'BackPrefix'
+Target 'UI.UIBgScreenChangeAnim' 'StartBg' @('UI.UIScreenChangeType') 'ScreenChangePrefix'
 Target 'UI.UIBattleSettingPanel' 'OnUIPhaseEnter' @('UI.UIPhase') 'EnteredPrefix' 'EnteredPostfix'
 foreach($row in @(@('OnOpen','OpenedPrefix'),@('OnClose','ClosedPrefix'),@('SetToggles','TogglesPrefix'),@('OnClickWaveButton','CenterPrefix'),@('OnClickFloorButton','CenterPrefix'),@('OnCancel','CancelPrefix'),@('OnClickBackButton','CancelPrefix'),@('SelectCurrentFloor','GuestUnsafePrefix'),@('UpdateEditPanel','GuestUnsafePrefix'),@('IsRunningTutorial','TutorialPrefix'))){Target 'UI.UIBattleSettingPanel' $row[0] @() $row[1]}
 Target 'UI.UIBattleSettingPanel' 'SetNextSephirah' @('UI.UISephirahButton') 'FloorPrefix' 'FloorPostfix'
@@ -96,7 +97,8 @@ foreach($row in @(
     @('UI.UIBattleSettingLibrarianInfoPanel','passiveSlotsPanel','UI.UISetInfoSlotListSc'),@('UI.UIBattleSettingLibrarianInfoPanel','equipedCardListPanel','UI.UIEquipCardList'),
     @('UI.UIBattleSettingLibrarianInfoPanel','toggle_ReleaseToggle'),@('UI.UIBattleSettingLibrarianInfoPanel','img_Unknown'),@('UI.UIBattleSettingLibrarianInfoPanel','portrait'),@('UI.UIBattleSettingLibrarianInfoPanel','cg'),@('UI.UIBattleSettingLibrarianInfoPanel','img_BookIcon','UnityEngine.UI.Image'),@('UI.UIBattleSettingLibrarianInfoPanel','img_BookIconGlow','UnityEngine.UI.Image'),
     @('UI.UIBattleSettingLibrarianInfoPanel','isBattlePageLock','System.Boolean'),@('UI.UIBattleSettingLibrarianInfoPanel','isEquipPageLock','System.Boolean'),@('UI.UIBattleSettingLibrarianInfoPanel','BattlePageSelectable','UI.UICustomSelectable'),@('UI.UIBattleSettingLibrarianInfoPanel','equipPageSelectable','UI.UICustomSelectable'),
-    @('UI.UICharacterRenderer','currentDataList'),@('UI.UICharacterRenderer','characterList')
+    @('UI.UICharacterRenderer','currentDataList'),@('UI.UICharacterRenderer','characterList'),
+    @('UI.UICharacter','unitModel','UnitDataModel'),@('UI.UICharacter','resName','System.String'),@('UI.UICharacter','unitAppearance','CharacterAppearance'),@('UnitDataModel','textureIndex','System.Int32')
 )){$shape=if($row.Count-gt2){$row[2]}else{''};Get-PrepField $row[0] $row[1] $shape|Out-Null}
 foreach($name in @('emotionText','speedDiceText','speedDiceNumText','playpointText','resistSlash','resistPentrate','resistHit','resistBreakSlash','resistBreakPentrate','resistBreakHit','hpText','breakText')){Get-PrepField 'UI.UICharacterStatInfoPanel' $name|Out-Null}
 foreach($spec in @(
@@ -246,9 +248,50 @@ $resume=$nativeBridge.Methods|Where-Object Name -eq 'Resume'
 $restoreHost=$nativeBridge.Methods|Where-Object Name -eq 'RestoreHostContext'
 $entered=$nativeBridge.Methods|Where-Object Name -eq 'EnteredPrefix'
 $enteredAfter=$nativeBridge.Methods|Where-Object Name -eq 'EnteredPostfix'
+Assert-Prep ((Calls $capture 'ObserveRoom').Count-eq1-and(Calls $capture 'Matches').Count-eq1-and(Calls $capture 'Adopt').Count-eq0) 'Capture relies on room lifecycle identity and cannot revive an explicitly ended reception'
+$adopt=$nativeBridge.Methods|Where-Object Name -eq 'Adopt'
+Assert-Prep ((Calls $adopt 'Begin').Count-eq1) 'Explicit invitation adoption uses idempotent lifecycle begin'
+$preparePrefix=$nativeBridge.Methods|Where-Object Name -eq 'PreparingPrefix'
+$prepareAfter=$nativeBridge.Methods|Where-Object Name -eq 'PreparedPostfix'
+$screenPrefix=$nativeBridge.Methods|Where-Object Name -eq 'ScreenChangePrefix'
+$acceptedPhase=$nativeBridge.Methods|Where-Object Name -eq 'EndForAcceptedPhase'
+$endPreparation=$nativeBridge.Methods|Where-Object Name -eq 'EndHostPreparation'
+$backPrefix=$nativeBridge.Methods|Where-Object Name -eq 'BackPrefix'
+Assert-Prep ((Calls $preparePrefix 'InvitationPrefix')[0].Offset-lt(Calls $preparePrefix 'EndHostPreparation')[0].Offset) 'A guest invitation is rejected before it can retire host preparation'
+Assert-Prep ((Calls $prepareAfter 'Adopt').Count-eq1-and(Calls $prepareAfter 'RefreshPreparation').Count-eq1) 'Only completed native preparation adopts and publishes its new context'
+Assert-Prep ((Calls $screenPrefix 'EndHostPreparation').Count-eq1-and@($screenPrefix.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldc.i4.4'}).Count-eq1) 'Actual invitation-return animation retires preparation at confirmed type four'
+Assert-Prep ((Calls $backPrefix 'EndHostPreparation').Count-eq0-and@($nativeBridge.Methods|Where-Object Name -eq 'BackPostfix').Count-eq0) 'Opening or cancelling the native return confirmation does not retire host preparation'
+Assert-Prep ($acceptedPhase-and$acceptedPhase.IsPrivate-and$acceptedPhase.ReturnType.FullName-eq'System.Void'-and$acceptedPhase.Parameters.Count-eq0) 'Accepted-phase lifecycle bridge takes no unconfirmed requested phase'
+Assert-Prep ((Calls $acceptedPhase 'ShouldEndForPhase').Count-eq1-and(Calls $acceptedPhase 'AllowsPhase').Count-eq1) 'Accepted native phase routing retains only its active native editors'
+$acceptedPhaseRead=@($acceptedPhase.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldstr'-and$_.Operand-eq'CurrentUIPhase'})
+Assert-Prep ($acceptedPhaseRead.Count-eq1-and(Calls $acceptedPhase 'Get').Count-eq1-and$acceptedPhaseRead[0].Offset-lt(Calls $acceptedPhase 'ShouldEndForPhase')[0].Offset) 'Exit routing reads the actual accepted current UI phase before deciding lifecycle end'
+Assert-Prep (@($acceptedPhase.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldsfld'-and$_.Operand.Name-eq'_closing'-and$_.Next.OpCode.Name-like'brtrue*'-and$_.Next.Operand.Offset-gt(Calls $acceptedPhase 'EndHostPreparation')[0].Offset}).Count-eq1) 'Projection cleanup skips accepted-phase lifecycle end while restoring its native phase'
+$acceptedCallers=@($nativeBridge.Methods|Where-Object {$_.HasBody-and(Calls $_ 'EndForAcceptedPhase').Count-gt0})
+Assert-Prep ($acceptedCallers.Count-eq1-and$acceptedCallers[0].Name-eq'ClosedPrefix'-and(Calls $closed 'EndForAcceptedPhase').Count-eq1) 'Only the confirmed native panel-close callback can trigger phase lifecycle end'
+$closedEndCall=(Calls $closed 'EndForAcceptedPhase')[0]
+foreach($name in @('get_InRoom','get_IsHost','get__context')){
+    $guardCall=(Calls $closed $name)[0]
+    Assert-Prep ($guardCall.Offset-lt$closedEndCall.Offset-and$guardCall.Next.OpCode.Name-like'brfalse*'-and$guardCall.Next.Operand.Offset-gt$closedEndCall.Offset) "Accepted-phase end is guarded by active host reception state: $name"
+}
+$guestCloseGuard=(Calls $closed 'get_GuestProjectionGuard')[0]
+Assert-Prep ($guestCloseGuard.Next.OpCode.Name-like'brtrue*'-and$guestCloseGuard.Next.Operand.Offset-gt$closedEndCall.Offset) 'Detached guest panel-close cannot trigger authoritative phase lifecycle end'
+$prepInstallStrings=@(($nativeBridge.Methods|Where-Object Name -eq 'Install').Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldstr'}|ForEach-Object Operand)
+Assert-Prep ('CallUIPhase'-notin$prepInstallStrings-and'PreparationPhasePrefix'-notin$prepInstallStrings-and@($nativeBridge.Methods|Where-Object Name -eq 'PreparationPhasePrefix').Count-eq0) 'Rejected native phase requests have no preparation prefix or lifecycle bridge'
+Assert-Prep ((Calls $endPreparation 'get_IsHost')[0].Offset-lt(Calls $endPreparation 'End')[0].Offset) 'Only the host can end authoritative reception lifecycle'
+Assert-Prep ((Calls $endPreparation 'End')[0].Offset-lt(Calls $endPreparation 'Close')[0].Offset-and(Calls $endPreparation 'Close')[0].Offset-lt(Calls $endPreparation 'RefreshPreparation')[0].Offset) 'Confirmed exit revokes lifecycle before cleanup and publishes Selection only after cleanup'
+Assert-Prep ((Calls $endPreparation 'Adopt').Count-eq0-and(Calls $endPreparation 'PrepareBattle').Count-eq0) 'Reception exit cannot initialize or recreate a game stage'
+$contextReads=@($tick.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldfld'-and$_.Operand.Name-eq'ContextId'})
+Assert-Prep ($contextReads.Count-ge2-and@((Calls $tick 'Close')|Where-Object {$_.Offset-gt$contextReads[1].Offset-and$_.Offset-lt(Calls $tick 'OpenGuest')[0].Offset}).Count-ge1) 'A new guest reception context closes the old projection before opening the new stage'
+$renderStageString=@($renderGuest.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldstr'-and$_.Operand-eq'stage'})
+Assert-Prep ($renderStageString.Count-eq1-and$renderStageString[0].Offset-lt(Calls $renderGuest 'RenderLibrarians')[0].Offset) 'Every guest render synchronizes native UI stage identity before showing its roster'
 Assert-Prep ((Calls $capture 'IsFailedContext').Count-eq1) 'Failed host display publishes CaptureFailed through the next capture'
 Assert-Prep ((Calls $tick 'IsFailedContext')[0].Offset-lt(Calls $tick 'OpenGuest')[0].Offset) 'Same failed room/context is checked before guest page opens'
-Assert-Prep ((Calls $tick 'IsFailedContext')[0].Offset-lt(Calls $tick 'CaptureRenderer')[0].Offset) 'Same failed room/context is checked before host renderer captures'
+Assert-Prep ((Calls $tick 'CaptureRenderer').Count-eq0) 'Host preparation never captures shared renderer slots for later stale restoration'
+$openGuest=$nativeBridge.Methods|Where-Object Name -eq 'OpenGuest'
+Assert-Prep ((Calls $openGuest 'CaptureRenderer').Count-eq1) 'Only guest projection captures renderer slots before borrowing them'
+$destroyString=@($close.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldstr'-and$_.Operand-eq'DestroyCharacters'})
+$capturedRendererGuard=@($close.Body.Instructions|Where-Object {$_.OpCode.Name-eq'ldsfld'-and$_.Operand.Name-eq'_rendererCaptured'-and$_.Next.OpCode.Name-like'brfalse*'})
+Assert-Prep ($destroyString.Count-eq1-and@($capturedRendererGuard|Where-Object {$_.Offset-lt$destroyString[0].Offset-and$_.Next.Operand.Offset-gt$destroyString[0].Offset}).Count-eq1) 'Host close skips destructive renderer replay unless guest capture owns the renderer'
 Assert-Prep ((Calls $fail 'RecordFailure')[0].Offset-lt(Calls $fail 'Close')[0].Offset) 'Failure is cached before page cleanup'
 Assert-Prep ((Calls $fail 'Close')[0].Offset-lt(Calls $fail 'RefreshPreparation')[0].Offset) 'Host failure publication occurs after page cleanup'
 Assert-Prep ((Calls $close 'ClearFailure').Count-eq0) 'Cleanup preserves failure cache and cannot trigger a retry loop'
@@ -261,6 +304,46 @@ foreach($name in @('stage','sephirah','unit','_sephirah','currentSephirahButton'
 Assert-Prep ((Calls $entered 'RestoreHostContext').Count-eq1-and(Calls $enteredAfter 'RestoreHostContext').Count-eq1) 'Native phase entry restores authoritative host fields before and after drawing'
 Assert-Prep ((Calls $return 'RestoreHostContext')[0].Offset-lt(Calls $return 'Call')[0].Offset) 'Editor return restores actual host context before calling phase transition'
 Assert-Prep ((Calls $tick 'RestoreHostContext')[0].Offset-lt(Calls $tick 'RenderEnemies')[0].Offset) 'Host dirty redraw restores actual context before rendering'
+$renderProfile=$nativeBridge.Methods|Where-Object Name -eq 'RenderProfile'
+foreach($method in @($renderEnemies,$renderProfile,$renderLibrarians)){
+    Assert-Prep ((Calls $method 'RendererSlot').Count-eq1) "$($method.Name) uses the explicit renderer role bank"
+}
+$slotHelper=$nativeBridge.Methods|Where-Object Name -eq 'RendererSlot'
+Assert-Prep ($slotHelper-and$slotHelper.ReturnType.FullName-eq'System.Int32'-and$slotHelper.Parameters.Count-eq3-and
+    $slotHelper.Parameters[0].ParameterType.FullName-eq'System.Boolean'-and$slotHelper.Parameters[1].ParameterType.FullName-eq'System.Boolean'-and$slotHelper.Parameters[2].ParameterType.FullName-eq'System.Int32') 'Compiled renderer bank helper accepts guest/enemy role and a row index'
+Assert-Prep (@($slotHelper.Body.Instructions|Where-Object {$_.OpCode.Name-in@('stfld','stsfld','call','callvirt')}).Count-eq0) 'Renderer bank selection uses pure arithmetic without model or Unity calls'
+$slotReflection=$bridge.GetMethod('RendererSlot',$prepFlags)
+foreach($guest in @($false,$true)){
+    for($index=0;$index-lt5;$index++){
+        $librarian=[int]$slotReflection.Invoke($null,@($guest,$false,$index));$enemy=[int]$slotReflection.Invoke($null,@($guest,$true,$index))
+        $expectedLibrarian=if($guest){$index}else{5+$index};$expectedEnemy=if($guest){5+$index}else{$index}
+        Assert-Prep ($librarian-eq$expectedLibrarian) "Librarian renderer bank preserves native host and detached guest slots: guest=$guest row=$index"
+        Assert-Prep ($enemy-eq$expectedEnemy) "Enemy renderer bank never depends on floor roster size: guest=$guest row=$index"
+        for($other=0;$other-lt5;$other++){
+            $otherLibrarian=[int]$slotReflection.Invoke($null,@($guest,$false,$other))
+            Assert-Prep ($enemy-ne$otherLibrarian) "Enemy and librarian portraits cannot share a camera: guest=$guest enemy=$index librarian=$other"
+        }
+    }
+}
+foreach($guest in @($false,$true)){foreach($enemy in @($false,$true)){foreach($index in @(-1,5,10)){
+    $rejected=$false
+    try{$slotReflection.Invoke($null,@($guest,$enemy,$index))|Out-Null}catch{$rejected=$_.Exception.GetBaseException()-is[ArgumentOutOfRangeException]}
+    Assert-Prep $rejected "Renderer bank rejects rows outside the five-slot bank: guest=$guest enemy=$enemy row=$index"
+}}}
+$phaseHelper=$bridge.GetMethod('ShouldEndForPhase',$prepFlags)
+foreach($case in @(
+    @('Actual preparation remains active',5,$false,$false,$false),
+    @('Editor return remains active preparation',5,$true,$false,$false),
+    @('Active combat-page editor retains preparation',10,$true,$false,$false),
+    @('Active core-page editor retains preparation',8,$true,$true,$false),
+    @('A core phase without an active deck editor ends preparation',8,$false,$true,$true),
+    @('A card phase without an active editor ends preparation',10,$false,$false,$true),
+    @('Invitation navigation ends preparation even from an editor',3,$true,$false,$true),
+    @('Story phase is not mistaken for an equipment editor',4,$true,$false,$true),
+    @('Library home navigation ends preparation',0,$false,$false,$true)
+)){
+    Assert-Prep ([bool]$phaseHelper.Invoke($null,@([int]$case[1],[bool]$case[2],[bool]$case[3]))-eq[bool]$case[4]) $case[0]
+}
 $lockSlot=(Get-PrepCecilType 'UI.UICharacterSlot').Methods|Where-Object Name -eq 'SetLockSlot'
 Assert-Prep ((Calls $lockSlot 'SetToggle').Count-eq1-and(Calls $lockSlot 'SetToggle')[0].Previous.OpCode.Name-eq'ldc.i4.0') 'Native lock refresh always hides participation toggle'
 $renderRoster=$nativeBridge.Methods|Where-Object Name -eq 'RenderLibrarians'
@@ -336,7 +419,7 @@ public static class RuinaPreparationRecoveryChecks
 }
 '@
 foreach($check in [RuinaPreparationRecoveryChecks]::Run($bridge,(Get-PrepType 'UnitDataModel'),(Get-PrepType 'UnitBattleDataModel'))){Assert-Prep $true $check}
-$result=[ordered]@{GameAssemblySha256=(Get-FileHash (Join-Path $guardManaged 'Assembly-CSharp.dll') -Algorithm SHA256).Hash;ModAssemblySha256=(Get-FileHash $guardModPath -Algorithm SHA256).Hash;CheckCount=$prepChecks.Count;TargetCount=$prepTargets.Count;Execution='Read-only metadata/IL plus pure compiled DTO identity/failure/roster recovery; no Unity/Steam/game constructors.';Checks=$prepChecks.ToArray()}
+$result=[ordered]@{GameAssemblySha256=(Get-FileHash (Join-Path $guardManaged 'Assembly-CSharp.dll') -Algorithm SHA256).Hash;ModAssemblySha256=(Get-FileHash $guardModPath -Algorithm SHA256).Hash;CheckCount=$prepChecks.Count;TargetCount=$prepTargets.Count;Execution='Read-only metadata/IL plus pure compiled renderer banks/phase routing/DTO identity/failure/roster recovery; no Unity/Steam/game constructors.';Checks=$prepChecks.ToArray()}
 if($prepOutput){$result|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $prepOutput -Encoding UTF8}
 "PASS: $($prepChecks.Count) native preparation contracts; $($prepTargets.Count) patch targets."
 $prepCecil.Dispose();$prepUiCecil.Dispose();$prepModCecil.Dispose()

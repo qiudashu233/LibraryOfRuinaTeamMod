@@ -8,7 +8,7 @@ internal static class Program
     private static int _checks;
     private static void Main()
     {
-        Protocol(); Codec(); Bounds(); State(); CrossSnapshot();
+        Protocol(); Codec(); Bounds(); State(); CrossSnapshot(); LifecycleChecks.Run(Check);
         Console.WriteLine("PASS preparation " + _checks + " checks");
     }
     private static void Check(bool condition, string name) { _checks++; if (!condition) throw new Exception(name); }

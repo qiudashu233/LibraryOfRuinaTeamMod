@@ -56,6 +56,7 @@ namespace RuinaCoop
         }
         private HostRelaySocket _hostSocket;
         private GuestRelayConnection _guestConnection;
+        private readonly GuestRelayRecovery _guestRecovery = new GuestRelayRecovery();
         private byte[] _latestPacket;
         private byte[] _latestContent;
         private float _nextCaptureTime;
@@ -169,14 +170,73 @@ namespace RuinaCoop
         {
             SteamNetworkingUtils.InitRelayNetworkAccess();
             var session = new RelaySession(room, hostId, false, onMainThread, onSnapshot);
-            session._guestConnection = SteamNetworkingSockets.ConnectRelay<GuestRelayConnection>(hostId, VirtualPort);
-            session._guestConnection.Owner = session;
+            session._guestRecovery.Begin(Time.realtimeSinceStartup);
             DeckGuard.Session = session;
-            session.Status = "Connecting to host progress relay...";
-            Debug.Log("[RuinaCoop] Connecting to host relay " + hostId +
-                ", connection " + session._guestConnection.Connection.Id +
-                "; Steam relay status: " + SteamNetworkingUtils.Status + ".");
+            session.ConnectGuestRelay();
             return session;
+        }
+
+        private void ConnectGuestRelay()
+        {
+            if (_stopped || _isHost || _guestRecovery.Failed || _guestRecovery.Stopped) return;
+            _guestChallenge = null; _guestAuthenticated = false;
+            // Steam starts relay configuration and certificate acquisition
+            // asynchronously. Retrying still uses the normal verified transport.
+            SteamNetworkingUtils.InitRelayNetworkAccess();
+            try
+            {
+                var connection = SteamNetworkingSockets.ConnectRelay<GuestRelayConnection>(_hostId, VirtualPort);
+                connection.Generation = _guestRecovery.Generation;
+                connection.Owner = this;
+                _guestConnection = connection;
+                Status = "Connecting to host progress relay...";
+                Debug.Log("[RuinaCoop] Connecting to host relay " + _hostId +
+                    ", connection " + connection.Connection.Id + ", attempt " + (_guestRecovery.RetryCount + 1) +
+                    "; Steam relay status: " + SteamNetworkingUtils.Status + ".");
+            }
+            catch (Exception exception)
+            { GuestConnectionFailed("connect: " + exception.Message, true); }
+        }
+
+        private bool IsCurrentGuestSource(GuestRelayConnection source)
+        {
+            return !_stopped && source != null && ReferenceEquals(source, _guestConnection) &&
+                source.Generation == _guestRecovery.Generation;
+        }
+
+        private void PostGuest(GuestRelayConnection source, Action action)
+        {
+            if (!IsCurrentGuestSource(source)) return;
+            _onMainThread(() => { if (IsCurrentGuestSource(source)) action(); });
+        }
+
+        private void GuestConnectionFailed(string reason, bool temporary)
+        {
+            _guestAuthenticated = false; _guestChallenge = null;
+            var old = _guestConnection; _guestConnection = null;
+            if (old != null) { old.Owner = null; try { old.Close(); } catch { } }
+            if (_guestRecovery.ScheduleFailure(Time.realtimeSinceStartup, temporary))
+            {
+                Status = "Host relay initial connection failed; retrying " + _guestRecovery.RetryCount + "/" + GuestRelayRecovery.MaxRetries + ".";
+                Debug.LogWarning("[RuinaCoop] Initial relay retry scheduled after " + reason +
+                    "; retry " + _guestRecovery.RetryCount + "/" + GuestRelayRecovery.MaxRetries +
+                    ", relay status " + SteamNetworkingUtils.Status + ".");
+            }
+            else
+            {
+                DeckStatus = "Host connection closed; leave and rejoin to edit decks.";
+                Status = "Host progress relay disconnected: " + reason + "; leave and rejoin.";
+                Debug.LogWarning("[RuinaCoop] Host relay disconnected: " + reason +
+                    "; automatic initial recovery stopped; authenticated before " + _guestRecovery.EverAuthenticated + ".");
+            }
+        }
+
+        private static bool TemporaryInitialFailure(NetConnectionEnd reason)
+        {
+            return reason == NetConnectionEnd.Remote_BadCert || reason == NetConnectionEnd.Remote_Timeout ||
+                reason == NetConnectionEnd.Misc_Timeout || reason == NetConnectionEnd.Misc_RelayConnectivity ||
+                reason == NetConnectionEnd.Misc_SteamConnectivity || reason == NetConnectionEnd.Misc_NoRelaySessionsToClient ||
+                reason == NetConnectionEnd.Local_NetworkConfig;
         }
 
         internal void Tick()
@@ -207,7 +267,13 @@ namespace RuinaCoop
                 }
                 else
                 {
-                    _guestConnection.Receive(32);
+                    if (_guestRecovery.Expire(Time.realtimeSinceStartup))
+                        GuestConnectionFailed("Initial connection/verification timed out", false);
+                    if (_guestRecovery.TryBeginRetry(Time.realtimeSinceStartup,
+                        SteamNetworkingUtils.Status == SteamNetworkingAvailability.Current)) ConnectGuestRelay();
+                    if (_guestRecovery.RetryPending && SteamNetworkingUtils.Status != SteamNetworkingAvailability.Current)
+                        Status = "Waiting for Steam relay initialization before reconnecting...";
+                    if (_guestConnection != null) _guestConnection.Receive(32);
                     if (PreparationReadyPending && Time.realtimeSinceStartup >= _readyRequestDeadline)
                         PreparationStatus = "就绪确认超时；等待权威快照，持续未恢复时请离房重连。";
                     if (DeckRequestPending && Time.realtimeSinceStartup >= _deckRequestDeadline)
@@ -781,6 +847,7 @@ namespace RuinaCoop
                 return;
             }
             _stopped = true;
+            _guestRecovery.Stop();
             _pendingDeckRequest = 0;
             _deferredDeckReply = null;
             _pendingCorePageRequest = 0;
@@ -1217,9 +1284,9 @@ namespace RuinaCoop
             });
         }
 
-        private void ReceiveChallenge(string challenge)
+        private void ReceiveChallenge(GuestRelayConnection source, string challenge)
         {
-            _onMainThread(() =>
+            PostGuest(source, () =>
             {
                 if (_stopped || _isHost || _guestAuthenticated)
                 {
@@ -1251,23 +1318,24 @@ namespace RuinaCoop
             Debug.Log("[RuinaCoop] Lobby proof sent for room " + _room.Id + ".");
         }
 
-        private void ReceiveAccepted(string challenge)
+        private void ReceiveAccepted(GuestRelayConnection source, string challenge)
         {
-            _onMainThread(() =>
+            PostGuest(source, () =>
             {
                 if (_stopped || _isHost || challenge != _guestChallenge)
                 {
                     return;
                 }
                 _guestAuthenticated = true;
+                _guestRecovery.Authenticated();
                 Status = "Room membership verified; waiting for host progress.";
                 Debug.Log("[RuinaCoop] Host confirmed lobby proof for room " + _room.Id + ".");
             });
         }
 
-        private void HostConnected(ConnectionInfo info)
+        private void HostConnected(GuestRelayConnection source, ConnectionInfo info)
         {
-            _onMainThread(() =>
+            PostGuest(source, () =>
             {
                 if (_stopped)
                 {
@@ -1279,23 +1347,17 @@ namespace RuinaCoop
             });
         }
 
-        private void HostDisconnected(ConnectionInfo info)
+        private void HostDisconnected(GuestRelayConnection source, ConnectionInfo info)
         {
-            _onMainThread(() =>
+            PostGuest(source, () =>
             {
-                if (!_stopped)
-                {
-                    _guestAuthenticated = false;
-                    DeckStatus = "Host connection closed; leave and rejoin to edit decks.";
-                    Status = "Host progress relay disconnected: " + info.EndReason;
-                    Debug.LogWarning("[RuinaCoop] Host relay disconnected: " + info.EndReason + ".");
-                }
+                GuestConnectionFailed(info.EndReason.ToString(), TemporaryInitialFailure(info.EndReason));
             });
         }
 
-        private void ReceiveHostMessage(byte[] bytes)
+        private void ReceiveHostMessage(GuestRelayConnection source, byte[] bytes)
         {
-            _onMainThread(() =>
+            PostGuest(source, () =>
             {
                 if (_stopped)
                 {
@@ -1343,9 +1405,9 @@ namespace RuinaCoop
             });
         }
 
-        private void ReceiveClaimReply(ClaimReply reply)
+        private void ReceiveClaimReply(GuestRelayConnection source, ClaimReply reply)
         {
-            _onMainThread(() =>
+            PostGuest(source, () =>
             {
                 if (_stopped || _isHost || !_guestAuthenticated ||
                     reply.RequestId <= _lastClaimReply)
@@ -1363,9 +1425,9 @@ namespace RuinaCoop
             });
         }
 
-        private void ReceiveDeckReply(DeckReply reply)
+        private void ReceiveDeckReply(GuestRelayConnection source, DeckReply reply)
         {
-            _onMainThread(() => CompleteDeckReply(reply));
+            PostGuest(source, () => CompleteDeckReply(reply));
         }
 
         private void CompleteDeckReply(DeckReply reply)
@@ -1499,9 +1561,9 @@ namespace RuinaCoop
             connection.SendMessage(PreparationProtocol.EncodeReply(RoomId, reply), SendType.Reliable);
         }
 
-        private void ReceivePreparationReadyReply(PreparationReadyReply reply)
+        private void ReceivePreparationReadyReply(GuestRelayConnection source, PreparationReadyReply reply)
         {
-            _onMainThread(() => CompletePreparationReadyReply(reply));
+            PostGuest(source, () => CompletePreparationReadyReply(reply));
         }
 
         private void CompletePreparationReadyReply(PreparationReadyReply reply)
@@ -1567,9 +1629,9 @@ namespace RuinaCoop
             }
         }
 
-        private void ReceiveCorePageReply(CorePageReply reply)
+        private void ReceiveCorePageReply(GuestRelayConnection source, CorePageReply reply)
         {
-            _onMainThread(() => CompleteCorePageReply(reply));
+            PostGuest(source, () => CompleteCorePageReply(reply));
         }
 
         private void CompleteCorePageReply(CorePageReply reply)
@@ -1629,9 +1691,9 @@ namespace RuinaCoop
                 left.ClaimRevision == right.ClaimRevision && left.DeckRevision == right.DeckRevision;
         }
 
-        private void ReceivePassiveReply(PassiveReply reply)
+        private void ReceivePassiveReply(GuestRelayConnection source, PassiveReply reply)
         {
-            _onMainThread(() => CompletePassiveReply(reply));
+            PostGuest(source, () => CompletePassiveReply(reply));
         }
 
         private void CompletePassiveReply(PassiveReply reply)
@@ -1789,6 +1851,7 @@ namespace RuinaCoop
         public sealed class GuestRelayConnection : ConnectionManager
         {
             internal RelaySession Owner;
+            internal uint Generation;
 
             public override void OnConnected(ConnectionInfo info)
             {
@@ -1796,7 +1859,7 @@ namespace RuinaCoop
                 base.OnConnected(info);
                 if (Owner != null)
                 {
-                    Owner.HostConnected(info);
+                    Owner.HostConnected(this, info);
                 }
             }
 
@@ -1807,7 +1870,7 @@ namespace RuinaCoop
                 base.OnDisconnected(info);
                 if (Owner != null)
                 {
-                    Owner.HostDisconnected(info);
+                    Owner.HostDisconnected(this, info);
                 }
             }
 
@@ -1823,40 +1886,40 @@ namespace RuinaCoop
                     string challenge;
                     if (RelayAuth.TryReadChallenge(bytes, out challenge))
                     {
-                        Owner.ReceiveChallenge(challenge);
+                        Owner.ReceiveChallenge(this, challenge);
                     }
                     else if (RelayAuth.TryReadAccepted(bytes, out challenge))
                     {
-                        Owner.ReceiveAccepted(challenge);
+                        Owner.ReceiveAccepted(this, challenge);
                     }
                     else if (ClaimProtocol.TryDecodeReply(bytes, Owner._room.Id.Value,
                         out ClaimReply reply))
                     {
-                        Owner.ReceiveClaimReply(reply);
+                        Owner.ReceiveClaimReply(this, reply);
                     }
                     else if (DeckProtocol.TryDecodeReply(bytes, Owner._room.Id.Value,
                         out DeckReply deckReply))
                     {
-                        Owner.ReceiveDeckReply(deckReply);
+                        Owner.ReceiveDeckReply(this, deckReply);
                     }
                     else if (EquipmentProtocol.TryDecodeReply(bytes, Owner._room.Id.Value,
                         out CorePageReply coreReply))
                     {
-                        Owner.ReceiveCorePageReply(coreReply);
+                        Owner.ReceiveCorePageReply(this, coreReply);
                     }
                     else if (PassiveProtocol.TryDecodeReply(bytes, Owner._room.Id.Value,
                         out PassiveReply passiveReply))
                     {
-                        Owner.ReceivePassiveReply(passiveReply);
+                        Owner.ReceivePassiveReply(this, passiveReply);
                     }
                     else if (PreparationProtocol.TryDecodeReply(bytes, Owner._room.Id.Value,
                         out PreparationReadyReply readyReply))
                     {
-                        Owner.ReceivePreparationReadyReply(readyReply);
+                        Owner.ReceivePreparationReadyReply(this, readyReply);
                     }
                     else
                     {
-                        Owner.ReceiveHostMessage(bytes);
+                        Owner.ReceiveHostMessage(this, bytes);
                     }
                 }
             }

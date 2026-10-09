@@ -11,8 +11,10 @@ namespace RuinaCoop
     // Reception presentation is a view, never a client StageController/Library replacement.
     internal static class NativePreparation
     {
-        private static StageModel _nativeStage;
-        private static ulong _context, _nextContext, _captureRoom, _failedRoom, _failedContext;
+        private static readonly PreparationLifecycle<StageModel> Lifecycle = new PreparationLifecycle<StageModel>();
+        private static StageModel _nativeStage { get { return Lifecycle.Stage; } }
+        private static ulong _context { get { return Lifecycle.ContextId; } }
+        private static ulong _failedRoom, _failedContext;
         private static int _nativeCall;
         private static RelaySession _session;
         private static ProgressSnapshot _displayed;
@@ -43,10 +45,11 @@ namespace RuinaCoop
 
         internal static void Install(Harmony harmony)
         {
-            Patch(harmony, "UI.UIController", "PrepareBattle", new[] { typeof(StageClassInfo), typeof(List<DropBookXmlInfo>) }, "InvitationPrefix", "PreparedPostfix");
+            Patch(harmony, "UI.UIController", "PrepareBattle", new[] { typeof(StageClassInfo), typeof(List<DropBookXmlInfo>) }, "PreparingPrefix", "PreparedPostfix");
             Patch(harmony, "UI.UIInvitationRightMainPanel", "SendInvitation", Type.EmptyTypes, "InvitationPrefix");
             Patch(harmony, "UI.UIInvitationRightMainPanel", "ConfirmSendInvitation", Type.EmptyTypes, "InvitationPrefix");
-            Patch(harmony, "UI.UIController", "BackBattlePrepare", Type.EmptyTypes, "BackPrefix", "BackPostfix");
+            Patch(harmony, "UI.UIController", "BackBattlePrepare", Type.EmptyTypes, "BackPrefix");
+            Patch(harmony, "UI.UIBgScreenChangeAnim", "StartBg", new[] { GameType("UI.UIScreenChangeType") }, "ScreenChangePrefix");
             Patch(harmony, "UI.UIBattleSettingPanel", "OnUIPhaseEnter", new[] { GameType("UI.UIPhase") }, "EnteredPrefix", "EnteredPostfix");
             Patch(harmony, "UI.UIBattleSettingPanel", "OnOpen", Type.EmptyTypes, "OpenedPrefix");
             Patch(harmony, "UI.UIBattleSettingPanel", "OnClose", Type.EmptyTypes, "ClosedPrefix");
@@ -99,12 +102,12 @@ namespace RuinaCoop
             if (session == null || !session.IsHost) return;
             try
             {
-                if (_captureRoom != session.RoomId) { _captureRoom = session.RoomId; _nativeStage = null; _context = 0; InitializedFloors.Clear(); }
                 var stage = StageController.Instance.GetStageModel();
-                // A room may be created after a native reception has already been prepared.
-                if (_nativeStage == null && stage != null && Convert.ToInt32(NativeUi.Get(NativeUi.Singleton("UI.UIController"), "CurrentUIPhase")) == 5)
-                    Adopt(stage);
-                if (stage == null || !ReferenceEquals(stage, _nativeStage) || _context == 0) return;
+                // Late room creation can adopt once. Ending a reception in the
+                // same room must not revive the retained StageController model.
+                if (Lifecycle.ObserveRoom(session.RoomId, stage,
+                    Convert.ToInt32(NativeUi.Get(NativeUi.Singleton("UI.UIController"), "CurrentUIPhase")) == 5)) InitializedFloors.Clear();
+                if (!Lifecycle.Matches(session.RoomId, stage)) return;
                 var info = stage.ClassInfo;
                 value.Phase = PreparationPhase.Editing; value.ContextId = _context;
                 if (info == null || info.id == null || !info.id.IsBasic() || info.id.id <= 0)
@@ -190,7 +193,7 @@ namespace RuinaCoop
             value.Floors.Clear(); value.Participants.Clear(); value.Waves.Clear(); value.Controllers.Clear();
         }
         private static void Adopt(StageModel stage)
-        { if (_nextContext == ulong.MaxValue) throw new InvalidOperationException("Reception context exhausted."); _nativeStage = stage; _context = ++_nextContext; InitializedFloors.Clear(); }
+        { if (Lifecycle.Begin(DeckGuard.Session.RoomId, stage)) InitializedFloors.Clear(); }
         // IsNormalInvitation means a generic book-value invitation in vanilla;
         // story receptions also use PrepareBattle and must be accepted here.
         internal static bool IsSupportedInvitation(StageClassInfo info, bool endContents)
@@ -216,8 +219,40 @@ namespace RuinaCoop
             }
         }
         private static bool InvitationPrefix() { return !InRoom || DeckGuard.Session.IsHost; }
+        private static bool PreparingPrefix()
+        {
+            if (!InvitationPrefix()) return false;
+            EndHostPreparation("new invitation");
+            return true;
+        }
         private static void PreparedPostfix()
-        { if (InRoom && DeckGuard.Session.IsHost) { _captureRoom = DeckGuard.Session.RoomId; Adopt(StageController.Instance.GetStageModel()); InitializeDefaultRoster(); DeckGuard.Session.RefreshPreparation(); } }
+        { if (InRoom && DeckGuard.Session.IsHost) { Adopt(StageController.Instance.GetStageModel()); InitializeDefaultRoster(); DeckGuard.Session.RefreshPreparation(); } }
+        private static bool ScreenChangePrefix(object __0)
+        {
+            // BackBattlePrepare may only open a confirmation popup. Type 4 is
+            // reached after actual confirmation, before any new page renders.
+            if (Convert.ToInt32(__0) == 4) EndHostPreparation("confirmed return to invitation");
+            return true;
+        }
+        private static void EndForAcceptedPhase()
+        {
+            // OnClose runs after CallUIPhase accepted its new phase, but before
+            // any new panel opens. A rejected navigation must keep preparation.
+            var phase = Convert.ToInt32(NativeUi.Get(NativeUi.Singleton("UI.UIController"), "CurrentUIPhase"));
+            if (!_closing && ShouldEndForPhase(phase, NativeDeckEditor.Active, NativeEquipmentEditor.AllowsPhase(phase)))
+                EndHostPreparation("UI phase " + phase);
+        }
+        internal static bool ShouldEndForPhase(int phase, bool editing, bool equipmentPhase)
+        { return phase != 5 && !(editing && (phase == 10 || equipmentPhase)); }
+        private static void EndHostPreparation(string reason)
+        {
+            if (!InRoom || !DeckGuard.Session.IsHost || _context == 0) return;
+            var context = _context;
+            Lifecycle.End(); InitializedFloors.Clear();
+            if (_session != null) Close();
+            Debug.Log("[RuinaCoop] Host preparation ended: context " + context + ", " + reason + ".");
+            DeckGuard.Session.RefreshPreparation();
+        }
 
         internal static bool TrySelectNativeFloor(byte floorId)
         {
@@ -263,20 +298,20 @@ namespace RuinaCoop
             { if (_session != null) Close(); return; }
             if (!prep.Available || prep.Phase != PreparationPhase.Editing)
             { if (_session != null) Close(); _status = prep.Reason == PreparationReason.NotCaptured ? "" : "此接待准备暂不支持：" + prep.Reason; return; }
+            if (_session != null && _displayed.Preparation.ContextId != prep.ContextId)
+                Close(); // Retire the old stage, renderer and input generation before reopening.
             if (_session == null)
             {
                 if (!session.IsHost && session.RoomId == _hiddenRoom && prep.ContextId == _hiddenContext) return;
                 if (!session.IsHost && !ControllerVisible()) return;
                 _session = session; _displayed = snapshot; _wave = prep.CurrentWaveIndex; _selectedUnit = 0; _dirty = true;
                 if (!session.IsHost) try { OpenGuest(); } catch (Exception exception) { Fail(exception); return; }
-                else try { _controller = NativeUi.Singleton("UI.UIController"); CaptureRenderer(); }
+                else try { _controller = NativeUi.Singleton("UI.UIController"); }
                     catch (Exception exception) { Fail(exception); return; }
             }
             else if (!ReferenceEquals(_displayed, snapshot))
             {
-                var contextChanged = _displayed.Preparation.ContextId != prep.ContextId;
                 _displayed = snapshot; _dirty = true;
-                if (contextChanged) { _wave = prep.CurrentWaveIndex; _selectedUnit = 0; }
             }
             if (NativeDeckEditor.Active || !_dirty) return;
             try
@@ -387,6 +422,7 @@ namespace RuinaCoop
             {
                 var prep = _displayed.Preparation; if (_selectedUnit >= prep.Participants.Count) _selectedUnit = 0;
                 if (_wave >= prep.Waves.Count) _wave = prep.CurrentWaveIndex;
+                NativeUi.Set(_uiData, "stage", StageClassInfoList.Instance.GetData(prep.StageId));
                 if (_rosterModels != null) _rosterModels.Dispose(); _rosterModels = new NativeDeckModels(_displayed);
                 NativeUi.Set(_uiData, "sephirah", (SephirahType)prep.FloorId);
                 NativeUi.Set(_uiData, "unit", _rosterModels.Units[_selectedUnit]);
@@ -433,7 +469,7 @@ namespace RuinaCoop
                 foreach (var name in new[] { "isEmptySlot", "isToggleActive", "_isToggleSelected" }) Remember(slot, name);
                 var unit = i < _rosterModels.Units.Count ? _rosterModels.Units[i] : null;
                 if (unit != null && _displayed.UnitDecks[i].Display.AppearanceAvailable)
-                    NativeUi.Call(NativeUi.Singleton("UI.UICharacterRenderer"), "SetCharacter", unit, i, true, false);
+                    NativeUi.Call(NativeUi.Singleton("UI.UICharacterRenderer"), "SetCharacter", unit, RendererSlot(true, false, i), true, false);
                 NativeUi.Call(slot, "SetSlot", unit, color, false); if (unit == null) continue;
                 var state = _displayed.Preparation.Participants[i];
                 NativeUi.Call(slot, "SetLockSlot", !state.CanParticipate);
@@ -475,7 +511,7 @@ namespace RuinaCoop
                 else
                 {
                     if (wave.Enemies[i].Display.AppearanceAvailable)
-                        NativeUi.Call(NativeUi.Singleton("UI.UICharacterRenderer"), "SetCharacter", EnemyUnits[i], _displayed.UnitDecks.Count + i, true, true);
+                        NativeUi.Call(NativeUi.Singleton("UI.UICharacterRenderer"), "SetCharacter", EnemyUnits[i], RendererSlot(GuestView, true, i), true, true);
                     NativeUi.Call(slot, "SetSlot", EnemyUnits[i], color, false); Show(NativeUi.Get(slot, "portraitImage"), wave.Enemies[i].Display.AppearanceAvailable);
                 }
                 Show(NativeUi.Get(slot, "toggleRoot"), false);
@@ -500,8 +536,9 @@ namespace RuinaCoop
             Show(NativeUi.Get(panel, "portrait"), false); // Render textures are bound below only when appearance metadata is available.
             if (display.AppearanceAvailable)
             {
-                var renderer = NativeUi.Singleton("UI.UICharacterRenderer"); var offset = librarian ? _selectedUnit : _displayed.UnitDecks.Count + EnemyUnits.IndexOf(unit);
-                NativeUi.Call(renderer, "SetCharacter", unit, (int)offset, true, !librarian);
+                var renderer = NativeUi.Singleton("UI.UICharacterRenderer");
+                var offset = RendererSlot(GuestView, !librarian, librarian ? _selectedUnit : EnemyUnits.IndexOf(unit));
+                NativeUi.Call(renderer, "SetCharacter", unit, offset, true, !librarian);
                 Put(NativeUi.Get(panel, "portrait"), "texture", NativeUi.Call(renderer, "GetRenderTextureByIndexAndSize", unit.textureIndex));
                 Show(NativeUi.Get(panel, "portrait"), true);
             }
@@ -516,6 +553,13 @@ namespace RuinaCoop
             foreach (var field in typeof(ProgressSnapshot.UnitDisplayEntry).GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
                 if (!field.IsInitOnly) field.SetValue(target, field.GetValue(source));
             target.PassiveIds.Clear(); target.PassiveIds.AddRange(source.PassiveIds);
+        }
+        internal static int RendererSlot(bool guest, bool enemy, int index)
+        {
+            if (index < 0 || index >= 5) throw new ArgumentOutOfRangeException("index");
+            // Vanilla host librarians occupy 5..9; mirrored guest librarians
+            // occupy 0..4. Enemy previews always use the other five slots.
+            return (enemy ? (guest ? 5 : 0) : (guest ? 0 : 5)) + index;
         }
         private static void Remember(object target, string name)
         {
@@ -533,7 +577,15 @@ namespace RuinaCoop
         private static bool OpenedPrefix(object __instance)
         { if (!GuestProjectionGuard) return true; Put(__instance, "IsActivated", true); NativeUi.Call(__instance, "RevealAnim"); return false; }
         private static bool ClosedPrefix(object __instance)
-        { if (!GuestProjectionGuard) return true; NativeUi.Call(NativeUi.Get(__instance, "infoLeftPanel"), "StopProcess"); NativeUi.Call(NativeUi.Get(__instance, "infoRightPanel"), "StopProcess"); Put(__instance, "IsActivated", false); return false; }
+        {
+            if (!GuestProjectionGuard)
+            {
+                if (InRoom && DeckGuard.Session.IsHost && _context != 0) EndForAcceptedPhase();
+                return true;
+            }
+            NativeUi.Call(NativeUi.Get(__instance, "infoLeftPanel"), "StopProcess");
+            NativeUi.Call(NativeUi.Get(__instance, "infoRightPanel"), "StopProcess"); Put(__instance, "IsActivated", false); return false;
+        }
         private static bool EnteredPrefix(object __0)
         {
             if (!GuestProjectionGuard) { if (Convert.ToInt32(__0) == 5) RestoreHostContext(); return true; }
@@ -651,7 +703,6 @@ namespace RuinaCoop
             return false;
         }
         private static bool BackPrefix() { if (!GuestView) return true; HideGuest(); return false; }
-        private static void BackPostfix() { if (InRoom && DeckGuard.Session.IsHost) { _nativeStage = null; _context = 0; DeckGuard.Session.RefreshPreparation(); } }
         private static bool CancelPrefix() { if (!GuestView) return true; HideGuest(); return false; }
         private static void HideGuest() { _hiddenContext = _displayed.Preparation.ContextId; _hiddenRoom = _session.RoomId; Close(); }
         internal static bool IsFailedContext(ulong room, ulong context)
@@ -677,7 +728,7 @@ namespace RuinaCoop
                 if (_controller != null && NativeUi.IsAlive(_controller))
                 {
                     var renderer = NativeUi.Singleton("UI.UICharacterRenderer");
-                    if (NativeUi.IsAlive(renderer))
+                    if (_rendererCaptured && NativeUi.IsAlive(renderer))
                     {
                         NativeUi.Call(renderer, "DestroyCharacters");
                         foreach (var slot in (IList)NativeUi.Get(renderer, "characterList")) { NativeUi.Set(slot, "unitModel", null); NativeUi.Set(slot, "resName", ""); }

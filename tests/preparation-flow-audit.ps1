@@ -53,6 +53,8 @@ try {
         @('UI.UIController','PrepareBattle','System.Void',@('StageClassInfo','System.Collections.Generic.List`1<DropBookXmlInfo>')),
         @('UI.UIController','OnClickGameStart','System.Void',@()),
         @('UI.UIController','BackBattlePrepare','System.Void',@()),
+        @('UI.UIController/<>c','<BackBattlePrepare>b__148_1','System.Void',@('System.Boolean')),
+        @('UI.UIBgScreenChangeAnim','StartBg','System.Void',@('UI.UIScreenChangeType')),
         @('UI.UIController','CallUIPhase','System.Void',@('UI.UIPhase')),
         @('UI.UIController','OnUIPhaseTransition','System.Void',@('UI.UIPhase','UI.UIPhase')),
         @('UI.UIBattleSettingPanel','OnClickBattleStart','System.Void',@()),
@@ -84,6 +86,11 @@ try {
         @('UI.UIEnemyCharacterListPanel','Activate','System.Void',@('System.Boolean')),
         @('UI.UIEnemyCharacterListPanel','OnUpdatePhase','System.Void',@()),
         @('UI.UIEnemyCharacterListPanel','SetEnemyCharacterListPanel','System.Void',@('System.Collections.Generic.List`1<UnitDataModel>','System.Boolean')),
+        @('UI.UICharacterListPanel','SetCharacterRenderer','System.Void',@('System.Collections.Generic.List`1<UnitBattleDataModel>','System.Boolean')),
+        @('UI.UILibrarianCharacterListPanel','SetLibrarianCharacterListPanel_Battle','System.Void',@()),
+        @('UI.UICharacterRenderer','SetCharacter','System.Void',@('UnitDataModel','System.Int32','System.Boolean','System.Boolean')),
+        @('UI.UICharacterRenderer','DestroyCharacters','System.Void',@()),
+        @('UI.UICharacterRenderer','GetRenderTextureByIndexAndSize','UnityEngine.Texture',@('System.Int32')),
         @('UI.UICharacterSlot','SetSlot','System.Void',@('UnitDataModel','UnityEngine.Color','System.Boolean')),
         @('UI.UICharacterSlot','SetUnknownSlot','System.Void',@()),
         @('UI.UICharacterSlot','SetBattleCharacter','System.Void',@('UnitBattleDataModel')),
@@ -161,6 +168,30 @@ try {
     Assert-Flow ($enemyActivateCalls.Count -eq 2 -and $enemyActivateCalls[0].Previous.OpCode.Name -eq 'ldc.i4.1' -and
         $enemyActivateCalls[1].Previous.OpCode.Name -eq 'ldc.i4.0') 'Original enemy phase update explicitly enables preparation canvas and disables invitation canvas'
     Assert-Flow ((Flow-Calls $methods['UI.UIEnemyCharacterListPanel.SetEnemyWaveInBattleSetting'] 'GetCurrentWaveModel').Count -eq 1) 'Automatic preparation preview reads the initialized current wave'
+    $nativeLibrarians = $methods['UI.UILibrarianCharacterListPanel.SetLibrarianCharacterListPanel_Battle']
+    $nativeLibrarianRender = Flow-Calls $nativeLibrarians 'SetCharacterRenderer'
+    Assert-Flow ($nativeLibrarianRender.Count -eq 1 -and $nativeLibrarianRender[0].Previous.OpCode.Name -eq 'ldc.i4.0') 'Actual native librarians use the false renderer bank'
+    $nativeEnemyRender = Flow-Calls $methods['UI.UIEnemyCharacterListPanel.SetEnemyWaveInBattleSetting'] 'SetCharacterRenderer'
+    Assert-Flow ($nativeEnemyRender.Count -eq 1 -and $nativeEnemyRender[0].Previous.OpCode.Name -eq 'ldc.i4.1') 'Actual native current-wave enemies use the true renderer bank'
+    $nativeBanks = $methods['UI.UICharacterListPanel.SetCharacterRenderer']
+    $bankFive = @($nativeBanks.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldc.i4.5' })
+    Assert-Flow ($bankFive.Count -eq 1 -and $bankFive[0].Previous.OpCode.Name -eq 'endfinally' -and
+        $bankFive[0].Next.OpCode.Name -like 'stloc*') 'Actual false renderer bank starts at slot five after the true-bank loop'
+    Assert-Flow ((Flow-Calls $nativeBanks 'SetCharacter').Count -eq 2) 'Actual renderer banks have separate SetCharacter loops'
+    $nativeCharacter = $methods['UI.UICharacterRenderer.SetCharacter']
+    Assert-Flow ((Flow-Fields $nativeCharacter 'stfld' 'textureIndex').Count -eq 1 -and
+        (Flow-Fields $nativeCharacter 'stfld' 'textureIndex')[0].Previous.OpCode.Name -eq 'ldarg.2') 'SetCharacter assigns the caller slot to the unit texture index'
+    Assert-Flow ((Flow-Fields $nativeCharacter 'stfld' 'unitModel').Count -ge 1 -and
+        (Flow-Calls $nativeCharacter 'ReleaseSdObject').Count -ge 1) 'SetCharacter replaces the shared slot model and releases its prior appearance'
+    $nativeDestroy = $methods['UI.UICharacterRenderer.DestroyCharacters']
+    Assert-Flow ((Flow-Fields $nativeDestroy 'stfld' 'unitAppearance').Count -eq 1 -and
+        (Flow-Fields $nativeDestroy 'stfld' 'unitModel').Count -eq 0 -and
+        (Flow-Fields $nativeDestroy 'stfld' 'resName').Count -eq 0) 'DestroyCharacters clears appearances but leaves shared slot model/resource metadata'
+    Assert-Flow ((Flow-Calls $nativeDestroy 'set_enabled').Count -eq 1 -and
+        (Flow-Calls $nativeDestroy 'ReleaseSdObject').Count -eq 1) 'DestroyCharacters also disables cameras and releases renderer resources'
+    $nativeTexture = $methods['UI.UICharacterRenderer.GetRenderTextureByIndexAndSize']
+    Assert-Flow ((Flow-Fields $nativeTexture 'ldfld' 'cameraList').Count -eq 1 -and
+        (Flow-Calls $nativeTexture 'get_targetTexture').Count -eq 1) 'Displayed portraits read the shared camera texture by slot index'
     $battleSlot = $methods['UI.UICharacterSlot.SetBattleCharacter']
     Assert-Flow ((Flow-Calls $battleSlot 'get_currentState').Count -eq 1 -and (Flow-Fields $battleSlot 'ldfld' 'isUnknownBattleSetting').Count -eq 1) 'Current-wave unknown decision combines host clear state with the real enemy unknown flag'
     Assert-Flow ((Flow-Calls $methods['UI.UIBattleSettingLibrarianInfoPanel.SetData'] 'get_currentState').Count -gt 0) 'Original profile depends on local stage visibility; guest replaces the whole method'
@@ -171,6 +202,28 @@ try {
     $phase = $methods['UI.UIController.CallUIPhase']
     $phaseCalls = @($phase.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'callvirt' -and $_.Operand.DeclaringType.FullName -eq 'UI.OnUIPhaseEnter' -and $_.Operand.Name -eq 'Invoke' })
     Assert-Flow ($phaseCalls.Count -eq 1 -and $phase.Body.Instructions[$phase.Body.Instructions.IndexOf($phaseCalls[0])-1].OpCode.Name -eq 'ldarg.1') 'Phase-enter delegate receives the new requested phase'
+    $acceptedPhaseWrite = Flow-Fields $phase 'stfld' '_currentUIPhase'
+    $phaseClose = Flow-Calls $phase 'OnClose'
+    $phaseOpen = Flow-Calls $phase 'OnOpen'
+    $phaseUpdate = Flow-Calls $phase 'OnUpdatePhase'
+    Assert-Flow ($acceptedPhaseWrite.Count -eq 1 -and $acceptedPhaseWrite[0].Previous.OpCode.Name -eq 'ldarg.1' -and
+        $phaseClose.Count -eq 1 -and $acceptedPhaseWrite[0].Offset -lt $phaseClose[0].Offset) 'Native accepted phase is recorded before any panel OnClose callback'
+    $transitionGate = Flow-Fields $phase 'ldfld' '_transition'
+    Assert-Flow ($transitionGate.Count -eq 1 -and $transitionGate[0].Next.OpCode.Name -like 'brfalse*' -and
+        $transitionGate[0].Next.Next.OpCode.Name -eq 'ret' -and
+        $transitionGate[0].Next.Next.Offset -lt $acceptedPhaseWrite[0].Offset) 'Active native transition rejects navigation before changing phase or closing a panel'
+    $phaseVeto = @($phase.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'callvirt' -and
+        $_.Operand.DeclaringType.FullName -eq 'System.Func`1<System.Boolean>' -and $_.Operand.Name -eq 'Invoke' })
+    Assert-Flow ($phaseVeto.Count -eq 1 -and $phaseVeto[0].Previous.OpCode.Name -eq 'ldfld' -and
+        $phaseVeto[0].Previous.Operand.Name -eq 'onCallUIPhase' -and $phaseVeto[0].Next.OpCode.Name -like 'brtrue*' -and
+        $phaseVeto[0].Next.Next.OpCode.Name -eq 'ret' -and
+        $phaseVeto[0].Next.Next.Offset -lt $acceptedPhaseWrite[0].Offset) 'Native navigation veto returns before phase write and cannot invoke the lifecycle close bridge'
+    Assert-Flow ($phaseOpen.Count -eq 1 -and $phaseUpdate.Count -eq 1 -and
+        $phaseClose[0].Offset -lt $phaseOpen[0].Offset -and $phaseOpen[0].Offset -lt $phaseUpdate[0].Offset) 'Native phase routing closes old panels before opening and updating new panels'
+    $closeLoop = $phaseClose[0].Next
+    Assert-Flow ($closeLoop.OpCode.Name -like 'ldloca*' -and $closeLoop.Next.Operand.Name -eq 'MoveNext' -and
+        $closeLoop.Next.Next.OpCode.Name -like 'brtrue*' -and $closeLoop.Next.Next.Operand.Offset -lt $phaseClose[0].Offset -and
+        $closeLoop.Next.Next.Next.OpCode.Name -like 'leave*' -and $closeLoop.Next.Next.Next.Operand.Offset -lt $phaseOpen[0].Offset) 'The complete native OnClose loop finishes before the first new-page OnOpen'
     Flow-NoPersistentCalls $phase 'CallUIPhase direct implementation'
     foreach ($name in @('UI.UIController.OnUIPhaseTransition','UI.UIFeedButton.OnPhaseEnter','UI.UIFeedButton.OnPhaseExit','UI.UICardPanel.OnUIPhaseEnter','UI.UICardPanel.OnUIPhaseExit','UI.UIMainPanel.OnUIPhaseEnter','UI.UITitleRearPanel.OnUIPhaseEnter','UI.UITitleRearPanel.OnPhaseTransition','UI.UITitlePanel.OnPhaseTransition','UI.UIFilterPanel.OnPhaseTransition')) {
         Flow-NoPersistentCalls $methods[$name] $name
@@ -184,6 +237,17 @@ try {
     Assert-Flow ((Flow-Calls $methods['UI.UICharacterSlot.OnClickToggle'] 'SelectedToggles').Count -eq 1) 'Toggle click forwards the original slot identity'
     Assert-Flow ((Flow-Calls $methods['UI.UIBattleSettingLibrarianInfoPanel.OnPointerClickBattlePageSlot'] 'GetEndContentState').Count -eq 1) 'Original edit pointer checks local end-content progress before its route'
     Assert-Flow (((Flow-Type 'UI.UIPhase').Fields | Where-Object Name -eq BattleSetting).Constant -eq 5) 'Actual preparation phase is enum value 5'
+    Assert-Flow (((Flow-Type 'UI.UIScreenChangeType').Fields | Where-Object Name -eq BackInvitation).Constant -eq 4) 'Actual confirmed invitation-return animation is enum value four'
+    $back = $methods['UI.UIController.BackBattlePrepare']
+    $backAnimations = Flow-Calls $back 'StartBg'
+    Assert-Flow (@($backAnimations | Where-Object { $_.Previous.OpCode.Name -eq 'ldc.i4.4' }).Count -eq 1 -and
+        (Flow-Calls $back 'SetAlarmText').Count -eq 2) 'BackBattlePrepare has both immediate exit and deferred confirmation paths'
+    $confirmedBack = $methods['UI.UIController/<>c.<BackBattlePrepare>b__148_1']
+    Assert-Flow ($confirmedBack.Body.Instructions[0].OpCode.Name -eq 'ldarg.1' -and
+        $confirmedBack.Body.Instructions[1].OpCode.Name -like 'brfalse*' -and
+        (Flow-Calls $confirmedBack 'StartBg').Count -eq 1 -and
+        (Flow-Calls $confirmedBack 'StartBg')[0].Previous.OpCode.Name -eq 'ldc.i4.4') 'Cancelled return confirmation never begins the invitation-return animation'
+    Assert-Flow ((Flow-Fields $methods['UI.UIBgScreenChangeAnim.StartBg'] 'stfld' 'changeType').Count -eq 1) 'StartBg records the requested confirmed screen transition before asynchronous animation'
     Assert-Flow ((Flow-Calls $methods['UI.UIController.OnClickGameStart'] 'StartBg').Count -eq 1) 'OnClickGameStart is a zero-argument animation entry'
     Assert-Flow ((Flow-Calls $methods['UI.UIBattleSettingPanel.OnClickBattleStart'] 'StartLightSpread').Count -eq 1) 'Start button has a separate special-final-stage animation branch'
     $prepMod = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Resolve-Path -LiteralPath $ModAssembly).ProviderPath)
@@ -206,6 +270,39 @@ try {
     Assert-Flow ((Flow-Calls $defaultRoster 'Add').Count -eq 1 -and
         (Flow-Calls $defaultRoster 'Add')[0].Offset -lt (Flow-Calls $defaultRoster 'set_IsAddedBattle')[0].Offset) 'Only the first explicit preparation visit per floor initializes participation'
     Assert-Flow ((Flow-Calls $capture 'InitializeDefaultRoster').Count -eq 0) 'Repeated snapshot capture cannot silently reselect librarians'
+    Assert-Flow ((Flow-Calls $capture 'ObserveRoom').Count -eq 1 -and (Flow-Calls $capture 'Matches').Count -eq 1 -and
+        (Flow-Calls $capture 'Adopt').Count -eq 0) 'Capture cannot implicitly re-adopt a retained StageModel after a confirmed same-room exit'
+    $endPreparation = $preparation.Methods | Where-Object Name -eq EndHostPreparation
+    Assert-Flow ($null -ne $endPreparation -and (Flow-Calls $endPreparation 'End').Count -eq 1 -and
+        (Flow-Calls $endPreparation 'Close').Count -eq 1 -and (Flow-Calls $endPreparation 'RefreshPreparation').Count -eq 1) 'Confirmed host exit retires lifecycle, closes projection and publishes the new state'
+    Assert-Flow ((Flow-Calls $endPreparation 'End')[0].Offset -lt (Flow-Calls $endPreparation 'Close')[0].Offset -and
+        (Flow-Calls $endPreparation 'Close')[0].Offset -lt (Flow-Calls $endPreparation 'RefreshPreparation')[0].Offset) 'Exit publication occurs after lifecycle revocation and view cleanup'
+    Flow-NoPersistentCalls $endPreparation 'Cooperative reception exit'
+    $preparationInstall = $preparation.Methods | Where-Object Name -eq Install
+    $preparationInstallStrings = @($preparationInstall.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldstr' } | ForEach-Object Operand)
+    Assert-Flow ('CallUIPhase' -notin $preparationInstallStrings -and 'PreparationPhasePrefix' -notin $preparationInstallStrings -and
+        @($preparation.Methods | Where-Object Name -eq PreparationPhasePrefix).Count -eq 0) 'Neither phase overload is prefixed; rejected native requests cannot retire preparation'
+    $acceptedPhase = $preparation.Methods | Where-Object Name -eq EndForAcceptedPhase
+    $acceptedPhaseCallers = @($preparation.Methods | Where-Object { $_.HasBody -and (Flow-Calls $_ 'EndForAcceptedPhase').Count -gt 0 })
+    Assert-Flow ($acceptedPhaseCallers.Count -eq 1 -and $acceptedPhaseCallers[0].Name -eq 'ClosedPrefix' -and
+        (Flow-Calls $acceptedPhaseCallers[0] 'EndForAcceptedPhase').Count -eq 1) 'Only actual preparation OnClose can invoke accepted-phase lifecycle fallback'
+    Assert-Flow (@($acceptedPhase.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'ldstr' -and $_.Operand -eq 'CurrentUIPhase' }).Count -eq 1 -and
+        (Flow-Calls $acceptedPhase 'ShouldEndForPhase').Count -eq 1 -and (Flow-Calls $acceptedPhase 'AllowsPhase').Count -eq 1 -and
+        (Flow-Calls $acceptedPhase 'EndHostPreparation').Count -eq 1) 'Accepted-phase fallback reads the real phase and preserves active card/core editing'
+    Flow-NoPersistentCalls $acceptedPhase 'Accepted native phase lifecycle fallback'
+    Assert-Flow ('StartBg' -in $preparationInstallStrings -and 'ScreenChangePrefix' -in $preparationInstallStrings -and
+        'BackPostfix' -notin $preparationInstallStrings) 'Lifecycle listens to actual screen exit and never clears on the return-confirmation popup'
+    $preparing = $preparation.Methods | Where-Object Name -eq PreparingPrefix
+    Assert-Flow ((Flow-Calls $preparing 'EndHostPreparation').Count -eq 1 -and
+        (Flow-Calls $preparing 'InvitationPrefix')[0].Offset -lt (Flow-Calls $preparing 'EndHostPreparation')[0].Offset) 'Starting a new host invitation retires previous projection before native stage construction'
+    $renderEnemies = $preparation.Methods | Where-Object Name -eq RenderEnemies
+    $renderProfile = $preparation.Methods | Where-Object Name -eq RenderProfile
+    foreach ($renderMethod in @($renderEnemies, $renderProfile)) {
+        Assert-Flow ((Flow-Calls $renderMethod 'RendererSlot').Count -eq 1 -and
+            (Flow-Calls $renderMethod 'SetEnemyWave').Count -eq 0 -and (Flow-Calls $renderMethod 'SystemRange').Count -eq 0) "$($renderMethod.Name) uses disjoint role slots and the authoritative resolved enemy DTO"
+    }
+    $tick = $preparation.Methods | Where-Object Name -eq Tick
+    Assert-Flow ((Flow-Calls $tick 'CaptureRenderer').Count -eq 0 -and (Flow-Calls $tick 'RenderEnemies').Count -eq 1) 'Host keeps deterministic shared enemy previews without retaining old whole-renderer restoration state'
     $guard = $prepMod.MainModule.Types | Where-Object FullName -eq 'RuinaCoop.DeckGuard'
     Assert-Flow ($null -ne $guard) 'Compiled DeckGuard exists'
     $install = $guard.Methods | Where-Object Name -eq Install
