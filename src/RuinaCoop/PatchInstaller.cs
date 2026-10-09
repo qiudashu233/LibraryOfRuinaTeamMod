@@ -29,6 +29,7 @@ namespace RuinaCoop
                 NativeDeckEditor.Install(harmony);
                 NativeEquipmentEditor.Install(harmony);
                 NativePassiveEditor.Install(harmony);
+                NativePreparation.Install(harmony);
                 harmony.Patch(original, postfix: new HarmonyMethod(postfix));
             }
             catch

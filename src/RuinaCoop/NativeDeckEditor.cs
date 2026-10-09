@@ -184,14 +184,19 @@ namespace RuinaCoop
         {
             if (session == null || !session.IsActive) return;
             var snapshot = Active ? _binding.Snapshot : session.LatestSnapshot;
+            if (snapshot != null && snapshot.SelectedFloorId == PrepClaims.NoFloor && !string.IsNullOrEmpty(NativePreparation.Status))
+                GUI.Label(new Rect(Math.Max(0, Screen.width - 380), 15, 365, 65), NativePreparation.Status);
             if (snapshot == null || snapshot.SelectedFloorId == PrepClaims.NoFloor || snapshot.UnitDecks.Count == 0) return;
             var floor = snapshot.Floors.Find(entry => (byte)entry.Sephirah == snapshot.SelectedFloorId);
             if (floor == null) return;
             var previousEnabled = GUI.enabled;
-            GUILayout.BeginArea(new Rect(Math.Max(0, Screen.width - 370), 15, 355, Math.Min(Screen.height - 25, 430)), GUI.skin.box);
+            GUILayout.BeginArea(new Rect(Math.Max(0, Screen.width - 370), 15, 355, Math.Min(Screen.height - 25, 550)), GUI.skin.box);
             try
             {
                 GUILayout.Label("联机准备 · " + floor.Sephirah);
+                if (snapshot.Preparation.Available)
+                    GUILayout.Label("准备版本 " + snapshot.Preparation.Revision + " · 出战 " +
+                        snapshot.Preparation.Participants.FindAll(row => row.Participating).Count + "/" + snapshot.Preparation.MaxUnits);
                 GUILayout.Label(Active ? (_binding.CanEdit ? "原版配装编辑 · 房主权威" : "原版配装查看 · 只读") : "选择馆员进入原版卡组页");
                 if (session.DeckRequestPending) GUILayout.Label("等待房主确认与卡组快照…");
                 if (!string.IsNullOrEmpty(_status)) GUILayout.Label(_status);
@@ -203,14 +208,15 @@ namespace RuinaCoop
                 {
                     var owner = snapshot.ClaimOwners[i];
                     var mine = owner == SteamClient.SteamId.Value;
+                    var participating = PreparationMirror.CanUseUnit(snapshot, i);
                     GUILayout.BeginHorizontal();
-                    GUILayout.Label(floor.Units[i] + (mine ? " · 我" : owner == 0 ? " · 未认领" : " · 已认领"), GUILayout.Width(155));
+                    GUILayout.Label(floor.Units[i] + (!participating ? " · 未出战" : mine ? " · 我" : owner == 0 ? " · 未认领" : " · 已认领"), GUILayout.Width(155));
                     GUI.enabled = session.IsReadyForDeck && !session.PreparationFrozen && !NativePassiveEditor.Active;
                     if (GUILayout.Button(mine ? "编辑角色卡组" : "查看卡组", GUILayout.Width(105)))
                     {
                         if (Active) Select(i); else Open(session, snapshot, i);
                     }
-                    GUI.enabled = session.IsReadyForDeck && !session.DeckRequestPending && !snapshot.DecksFrozen && !NativePassiveEditor.Active && (mine || owner == 0);
+                    GUI.enabled = participating && session.IsReadyForDeck && !session.DeckRequestPending && !snapshot.DecksFrozen && !NativePassiveEditor.Active && (mine || owner == 0);
                     if (GUILayout.Button(mine ? "释放" : "认领", GUILayout.Width(55)))
                         session.RequestClaim(snapshot, i, mine ? ClaimAction.Release : ClaimAction.Claim);
                     GUILayout.EndHorizontal();
@@ -220,9 +226,35 @@ namespace RuinaCoop
                 if (Active && GUILayout.Button("查看/更换核心书页")) NativeEquipmentEditor.TryOpen();
                 if (Active && GUILayout.Button("查看/编辑被动")) NativePassiveEditor.TryOpen();
                 GUI.enabled = true;
-                if (Active && GUILayout.Button("返回准备")) Close();
+                if (Active && GUILayout.Button("返回准备"))
+                {
+                    Close();
+                    NativePreparation.ReturnFromEditor();
+                }
+                if (snapshot.Preparation.Available)
+                {
+                    GUI.enabled = !Active && !session.DeckRequestPending;
+                    if (GUILayout.Button("查看挑战准备")) NativePreparation.Resume(session);
+                    GUI.enabled = true;
+                    var controller = snapshot.Preparation.Controllers.Find(row => row.PlayerId == SteamClient.SteamId.Value);
+                    GUILayout.Label(controller == null ? "当前为旁观玩家，无需就绪。" : controller.Ready ? "已就绪 · 配置变化后需要重新确认" : "编辑完成后确认就绪");
+                    GUI.enabled = controller != null && !Active && !session.DeckRequestPending && !session.PreparationReadyPending && !session.PreparationFrozen;
+                    if (GUILayout.Button(controller != null && controller.Ready ? "取消就绪" : "确认就绪"))
+                        session.RequestPreparationReady(snapshot, !controller.Ready);
+                    GUI.enabled = true;
+                    GUILayout.Label(session.PreparationStatus);
+                    GUILayout.Label(NativePreparation.Status);
+                    GUILayout.Label("合作战斗将在后续阶段开放。");
+                }
             }
             finally { GUI.enabled = previousEnabled; GUILayout.EndArea(); }
+        }
+
+        internal static bool TryOpen(RelaySession session, ProgressSnapshot snapshot, byte index)
+        {
+            if (Active || session == null || !ReferenceEquals(snapshot, session.LatestSnapshot)) return false;
+            Open(session, snapshot, index);
+            return Active;
         }
 
         private static void Open(RelaySession session, ProgressSnapshot snapshot, byte index)
@@ -259,7 +291,7 @@ namespace RuinaCoop
                 NativeUi.Set(_uiData, "sephirah", (SephirahType)snapshot.SelectedFloorId);
                 NativeUi.Set(_uiData, "unit", Current);
                 _renderDirty = true;
-                _status = "卡组和普通核心书更换由房主确认；预设与被动继承暂不可修改。";
+                _status = "卡组、普通核心书和被动修改由房主确认。";
                 NativeUi.Call(_controller, "CallUIPhase", Enum.ToObject(_previousPhase.GetType(), 10));
                 Refresh();
                 _dirty = false;

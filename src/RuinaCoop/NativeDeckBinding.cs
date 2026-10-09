@@ -32,6 +32,7 @@ namespace RuinaCoop
         private readonly ulong _localId;
         private readonly int _stageId;
         private readonly byte _floorId;
+        private readonly ulong _preparationContextId;
         private readonly ulong[] _roster;
         private int _bookId;
         private int _bookInstanceId;
@@ -52,6 +53,7 @@ namespace RuinaCoop
                 if (!Valid || !MatchesContext(Snapshot)) return false;
                 var deck = Snapshot.UnitDecks[UnitIndex];
                 return deck.UnitIdentity != 0 && Snapshot.ClaimOwners[UnitIndex] == _localId &&
+                    PreparationMirror.CanUseUnit(Snapshot, UnitIndex) &&
                     !Snapshot.DecksFrozen && deck.BookId > 0 && !deck.Fixed && !deck.MultiDeck;
             }
         }
@@ -64,6 +66,7 @@ namespace RuinaCoop
             _localId = localId;
             _stageId = snapshot.SelectedStageId;
             _floorId = snapshot.SelectedFloorId;
+            _preparationContextId = snapshot.Preparation == null ? 0 : snapshot.Preparation.ContextId;
             _roster = new ulong[snapshot.UnitDecks.Count];
             for (var i = 0; i < _roster.Length; i++) _roster[i] = snapshot.UnitDecks[i].UnitIdentity;
             CaptureSelection();
@@ -203,6 +206,7 @@ namespace RuinaCoop
         private bool MatchesRoster(ProgressSnapshot snapshot)
         {
             if (!IsPrepared(snapshot) || snapshot.SelectedStageId != _stageId ||
+                (snapshot.Preparation == null ? 0 : snapshot.Preparation.ContextId) != _preparationContextId ||
                 snapshot.SelectedFloorId != _floorId || snapshot.UnitDecks.Count != _roster.Length ||
                 UnitIndex >= snapshot.UnitDecks.Count)
             {

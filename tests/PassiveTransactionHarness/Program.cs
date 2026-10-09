@@ -302,6 +302,8 @@ internal static class Program
         Rejection((f,s,r)=>f.Positive.InnerTypeId=31,"duplicate inner type");
         Rejection((f,s,r)=>LibraryModel.Instance.MaxCost=5,"host chapter cost changed");
         Rejection((f,s,r)=>{s.DecksFrozen=true;},"reception frozen");
+        Rejection((f,s,r)=>{s.PreparationParticipationAllowed=false;
+            Check(PassiveAuthority.Validate(s,77,r)==PassiveResultCode.NotReady,"unselected librarian denied by production passive authority");},"librarian removed from preparation roster");
         Rejection((f,s,r)=>r.Slots[0]=Import(f.Next,0,f.Positive.id.id),"locked native import");
         Rejection((f,s,r)=>r.Slots[2]=Import(f.Next,0,f.Positive.id.id),"source slot borrowed twice");
     }

@@ -10,6 +10,13 @@ namespace RuinaCoop
     [Flags] internal enum PassiveSlotFlags : byte { None=0, CanGive=1, Locked=2, Negative=4, Hidden=8, CanReceive=16, Given=32 }
     internal static class PrepClaims { internal const byte NoFloor=0; }
     internal static class PassiveMirror { internal const int EmptyId=9999999, MaxSlots=64; }
+    // Only the external permission decision is stubbed in transaction tests.
+    // PreparationHarness and CodecHarness validate the real preparation graph.
+    internal static class PreparationMirror
+    {
+        internal static bool CanUseUnit(ProgressSnapshot snapshot, int index)
+        { return snapshot != null && index >= 0 && index < snapshot.UnitDecks.Count && snapshot.PreparationParticipationAllowed; }
+    }
     internal static class EquipmentMirror
     {
         internal static bool TryResolveBook(ProgressSnapshot snapshot, ulong token, out BookModel book)
@@ -20,6 +27,7 @@ namespace RuinaCoop
         internal int SelectedStageId=10; internal byte SelectedFloorId=1;
         internal uint ClaimRevision=1, DeckRevision=2;
         internal bool DecksFrozen, CoreBooksAvailable=true, PassivesAvailable=true;
+        internal bool PreparationParticipationAllowed=true;
         internal CoreBooksReason CoreBooksReason; internal PassivesReason PassivesReason;
         internal readonly List<CoreBookEntry> CoreBooks=new List<CoreBookEntry>();
         internal readonly List<PassiveBookEntry> PassiveBooks=new List<PassiveBookEntry>();

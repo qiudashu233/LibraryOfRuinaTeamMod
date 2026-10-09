@@ -26,6 +26,8 @@ namespace RuinaCoop
         private byte _floorId = NoFloor;
         private object[] _unitReferences = new object[0];
         private ulong[] _owners = new ulong[0];
+        private ulong _contextId;
+        private byte _participationMask;
 
         internal uint Revision { get; private set; }
         internal byte FloorId { get { return _floorId; } }
@@ -100,6 +102,8 @@ namespace RuinaCoop
             {
                 return ClaimResultCode.InvalidSlot;
             }
+            if (_contextId != 0 && (_participationMask & (1 << unitIndex)) == 0)
+                return ClaimResultCode.InvalidSlot;
             var owner = _owners[unitIndex];
             if (action == ClaimAction.Claim)
             {
@@ -123,6 +127,33 @@ namespace RuinaCoop
                 Revision++;
             }
             return ClaimResultCode.Accepted;
+        }
+
+        internal void ReconcilePreparation(PreparationSnapshot preparation)
+        {
+            if (preparation == null || !preparation.Available || preparation.Phase != PreparationPhase.Editing)
+            {
+                ResetFloor();
+                _contextId = 0;
+                _participationMask = 0;
+                return;
+            }
+            byte mask = 0;
+            foreach (var unit in preparation.Participants)
+                if (unit.UnitIndex < _owners.Length && unit.CanParticipate && unit.Participating)
+                    mask |= (byte)(1 << unit.UnitIndex);
+            var changed = _contextId != preparation.ContextId || _participationMask != mask;
+            for (var i = 0; i < _owners.Length; i++)
+            {
+                if (_contextId != preparation.ContextId || (mask & (1 << i)) == 0)
+                {
+                    changed |= _owners[i] != 0;
+                    _owners[i] = 0;
+                }
+            }
+            if (changed) Revision++;
+            _contextId = preparation.ContextId;
+            _participationMask = mask;
         }
 
         internal bool ReleaseAbsent(Func<ulong, bool> isMember)

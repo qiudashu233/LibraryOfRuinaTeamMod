@@ -107,7 +107,7 @@ internal static class PassiveCodecChecks
     {
         var sample = MetadataSample(); var packet = sample.Encode(Room);
         ProgressSnapshot parsed;
-        Check(ProgressSnapshot.TryDecode(packet, Room, out parsed) && packet[4] == 7, "wire7 complete passive metadata round trip");
+        Check(ProgressSnapshot.TryDecode(packet, Room, out parsed) && packet[4] == 8, "wire8 complete passive metadata round trip");
         Check(parsed.PassivesAvailable && parsed.PassivesReason == PassivesReason.None && parsed.PassiveBooks.Count == 3, "complete metadata availability");
         var slot = parsed.PassiveBooks[0].Slots[1];
         Check(slot.OriginId == PassiveMirror.EmptyId && slot.CurrentId == 202 && slot.CurrentCost == 3 && slot.CurrentRarity == 2 &&
@@ -150,13 +150,15 @@ internal static class PassiveCodecChecks
             var failed = false; try { sample.Encode(Room); } catch (InvalidOperationException) { failed = true; }
             Check(failed, "encoder rejects invalid metadata DTO");
         }
-        sample = MetadataSample(); packet = sample.Encode(Room); var start = packet.Length - PassiveMirror.EncodeWireData(sample).Length;
+        sample = MetadataSample(); packet = sample.Encode(Room);
+        var preparation = PreparationBytes(sample);
+        var start = packet.Length - PassiveMirror.EncodeWireData(sample).Length - preparation.Length;
         foreach (var change in new[] { new int[] { 4, 255 },
             new int[] { 14, 8 }, new int[] { 15, 13 }, new int[] { 16, 5 }, new int[] { 17, 5 },
             new int[] { 46, 5 }, new int[] { 65, 2 }, new int[] { 66, 5 }, new int[] { 75, 64 } })
         {
             var raw = PassiveMirror.EncodeContent(sample).Skip(4).ToArray(); raw[change[0] - 4] = (byte)change[1];
-            var bad = packet.Take(start).Concat(Compressed(raw)).ToArray();
+            var bad = packet.Take(start).Concat(Compressed(raw)).Concat(preparation).ToArray();
             Check(!ProgressSnapshot.TryDecode(bad, Room, out _), "malformed passive field " + change[0]);
         }
         for (var length = start; length < packet.Length; length++) Check(!ProgressSnapshot.TryDecode(packet.Take(length).ToArray(), Room, out _), "truncated passive graph " + length);
@@ -192,6 +194,11 @@ internal static class PassiveCodecChecks
             writer.Write(declaredRaw ?? raw.Length); writer.Write(packed.Length); writer.Write(packed);
             return stream.ToArray();
         }
+    }
+    private static byte[] PreparationBytes(ProgressSnapshot snapshot)
+    {
+        using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream))
+        { PreparationMirror.WriteData(writer, snapshot.Preparation); return stream.ToArray(); }
     }
     private static ProgressSnapshot RealLibrary()
     {
@@ -239,6 +246,9 @@ internal static class PassiveCodecChecks
             { Id = id, Chapter = 7, State = StoryState.Open, Name = "Reception " + id });
         // Match the observed 30,815-byte base packet without dropping any book,
         // card, or passive. Only ordinary bounded stage display names are padded.
+        // Retain the v13 observed total baseline by reducing synthetic stage-name
+        // padding by the new v14 preparation section. This is a budget fixture,
+        // not a claim about the host's actual progress packet contents.
         var missing = 30815 - sample.Encode(Room).Length;
         foreach (var stage in sample.Stages)
         {
@@ -256,7 +266,7 @@ internal static class PassiveCodecChecks
             LibraryModel.Instance = new LibraryModel { Chapter = 7 };
             var sample = RealLibrary(); var baseBytes = sample.Encode(Room).Length;
             Check(baseBytes == 30815 && sample.CoreBooks.Count == 505 && sample.CoreBooks.Count(b => b.Flags == CoreBookFlags.PassiveBound) == 77,
-                "observed library scale includes complete 505 books and 77 donor instances");
+                "505 books and 77 donors use the observed total budget, including the new preparation section");
             PassiveMirror.Capture(sample);
             Check(sample.PassivesAvailable && sample.PassivesReason == PassivesReason.None && sample.PassiveBooks.Count == 505,
                 "actual capture branch retains complete observed library passive pool");
@@ -285,48 +295,51 @@ internal static class PassiveCodecChecks
                 "compression never grants ownership to another viewer");
             Check(sample.CoreBooks.All(core => ((BookModel)core.BookReference).PassiveModels.All(model => model.reservedData == null)),
                 "full-scale capture and request drafting leave all physical reserves untouched");
-            Console.WriteLine("Observed-scale snapshot: base=" + baseBytes + " B; raw passive=" + raw.Length + " B; compressed passive=" + wire.Length + " B; complete=" + packet.Length + " B.");
+            Console.WriteLine("Observed-budget fixture (v14 preparation included, synthetic name padding reduced): base=" + baseBytes + " B; raw passive=" + raw.Length + " B; compressed passive=" + wire.Length + " B; complete=" + packet.Length + " B.");
         }
         finally { LibraryModel.Instance = library; }
     }
     private static void CompressedBoundaries()
     {
         var sample = MetadataSample(); var packet = sample.Encode(Room);
-        var wire = PassiveMirror.EncodeWireData(sample); var prefix = packet.Take(packet.Length - wire.Length).ToArray();
+        var wire = PassiveMirror.EncodeWireData(sample); var suffix = PreparationBytes(sample);
+        var prefix = packet.Take(packet.Length - wire.Length - suffix.Length).ToArray();
+        Func<byte[], byte[]> replace = section => prefix.Concat(section).Concat(suffix).ToArray();
         var raw = PassiveMirror.EncodeContent(sample).Skip(4).ToArray();
-        Check(prefix.Concat(Compressed(raw)).SequenceEqual(packet), "test compressor reproduces actual wire section without using canonical header as wire");
+        Check(replace(Compressed(raw)).SequenceEqual(packet) && ProgressSnapshot.TryDecode(replace(Compressed(raw)), Room, out _),
+            "test compressor reproduces and decodes the full wire packet including preparation tail");
         var empty = new ProgressSnapshot { CoreBooksAvailable = true, CoreBooksReason = CoreBooksReason.None,
             PassivesAvailable = true, PassivesReason = PassivesReason.None };
         Check(BitConverter.ToInt32(PassiveMirror.EncodeWireData(empty), 4) == 2 && ProgressSnapshot.TryDecode(empty.Encode(Room), Room, out var emptyParsed) &&
             emptyParsed.PassivesAvailable && emptyParsed.PassiveBooks.Count == 0, "minimum two-byte expanded complete empty inventory is accepted");
-        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, PassiveMirror.MaxExpandedBytes)).ToArray(), Room, out _, out var shortReason) &&
+        Check(!ProgressSnapshot.TryDecode(replace(Compressed(raw, PassiveMirror.MaxExpandedBytes)), Room, out _, out var shortReason) &&
             shortReason.Contains("truncated"), "maximum allowed expanded length remains bounded and rejects actual short stream");
         var oldVersion = (byte[])packet.Clone(); oldVersion[4] = 6;
         Check(!ProgressSnapshot.TryDecode(oldVersion, Room, out _), "previous uncompressed wire version is explicitly rejected");
         foreach (var change in new[] { new[] { 0, 2 }, new[] { 1, 1 }, new[] { 2, 0 }, new[] { 2, 2 }, new[] { 3, 1 } })
         {
             var bad = (byte[])wire.Clone(); bad[change[0]] = (byte)change[1];
-            Check(!ProgressSnapshot.TryDecode(prefix.Concat(bad).ToArray(), Room, out _), "invalid compressed header at " + change[0] + ":" + change[1]);
+            Check(!ProgressSnapshot.TryDecode(replace(bad), Room, out _), "invalid compressed header at " + change[0] + ":" + change[1]);
         }
         foreach (var length in new[] { int.MinValue, -1, 0, 1, PassiveMirror.MaxExpandedBytes + 1, int.MaxValue })
-            Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, length)).ToArray(), Room, out _), "expanded length rejected before allocation " + length);
+            Check(!ProgressSnapshot.TryDecode(replace(Compressed(raw, length)), Room, out _), "expanded length rejected before allocation " + length);
         foreach (var length in new[] { int.MinValue, -1, 0, 65525, int.MaxValue })
         {
             var bad = (byte[])wire.Clone(); Array.Copy(BitConverter.GetBytes(length), 0, bad, 8, 4);
-            Check(!ProgressSnapshot.TryDecode(prefix.Concat(bad).ToArray(), Room, out _), "compressed length boundary " + length);
+            Check(!ProgressSnapshot.TryDecode(replace(bad), Room, out _), "compressed length boundary " + length);
         }
         var packed = wire.Skip(12).ToArray();
         for (var cut = 0; cut < packed.Length; cut++)
-            Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length, packed.Take(cut).ToArray())).ToArray(), Room, out _),
+            Check(!ProgressSnapshot.TryDecode(replace(Compressed(raw, raw.Length, packed.Take(cut).ToArray())), Room, out _),
                 "forged shorter compressed length cannot hide missing stream end " + cut);
-        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length, new byte[] { 255, 255, 255, 255 })).ToArray(), Room, out _), "invalid Deflate stream rejected");
-        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length, packed.Concat(new byte[] { 0 }).ToArray())).ToArray(), Room, out _), "compressed trailing byte rejected");
-        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length, packed.Concat(packed).ToArray())).ToArray(), Room, out _), "concatenated compressed stream rejected");
-        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length - 1)).ToArray(), Room, out _), "extra expanded byte beyond declaration rejected");
-        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw, raw.Length + 1)).ToArray(), Room, out _), "short expanded stream below declaration rejected");
-        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(new byte[PassiveMirror.MaxExpandedBytes + 1], 2)).ToArray(), Room, out _),
+        Check(!ProgressSnapshot.TryDecode(replace(Compressed(raw, raw.Length, new byte[] { 255, 255, 255, 255 })), Room, out _), "invalid Deflate stream rejected");
+        Check(!ProgressSnapshot.TryDecode(replace(Compressed(raw, raw.Length, packed.Concat(new byte[] { 0 }).ToArray())), Room, out _), "compressed trailing byte rejected");
+        Check(!ProgressSnapshot.TryDecode(replace(Compressed(raw, raw.Length, packed.Concat(packed).ToArray())), Room, out _), "concatenated compressed stream rejected");
+        Check(!ProgressSnapshot.TryDecode(replace(Compressed(raw, raw.Length - 1)), Room, out _), "extra expanded byte beyond declaration rejected");
+        Check(!ProgressSnapshot.TryDecode(replace(Compressed(raw, raw.Length + 1)), Room, out _), "short expanded stream below declaration rejected");
+        Check(!ProgressSnapshot.TryDecode(replace(Compressed(new byte[PassiveMirror.MaxExpandedBytes + 1], 2)), Room, out _),
             "high compression expansion bomb rejected after declared two-byte bound");
-        Check(!ProgressSnapshot.TryDecode(prefix.Concat(Compressed(raw.Concat(new byte[] { 0 }).ToArray())).ToArray(), Room, out _), "valid Deflate with trailing expanded field rejected");
+        Check(!ProgressSnapshot.TryDecode(replace(Compressed(raw.Concat(new byte[] { 0 }).ToArray())), Room, out _), "valid Deflate with trailing expanded field rejected");
         Check(!ProgressSnapshot.TryDecode(new byte[65537], Room, out _), "true transport packet overflow remains rejected");
         var library = LibraryModel.Instance;
         try

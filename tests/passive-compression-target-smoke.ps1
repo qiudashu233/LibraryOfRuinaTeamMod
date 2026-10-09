@@ -24,6 +24,16 @@ $compressionPacket = [byte[]]$compressionType.GetMethod('Encode', $compressionFl
     $compressionSnapshot, [object[]]@([UInt64]987))
 $compressionWire = [byte[]]$compressionMirror.GetMethod('EncodeWireData', $compressionFlags).Invoke(
     $null, [object[]]@($compressionSnapshot))
+$compressionPreparationType = $GuardSmokeModAssembly.GetType('RuinaCoop.PreparationMirror', $true)
+$compressionPreparation = $compressionType.GetField('Preparation', $compressionFlags).GetValue($compressionSnapshot)
+$compressionPreparationStream = New-Object System.IO.MemoryStream
+$compressionPreparationWriter = New-Object System.IO.BinaryWriter -ArgumentList $compressionPreparationStream
+try {
+    $compressionPreparationType.GetMethod('WriteData', $compressionFlags).Invoke(
+        $null, [object[]]@($compressionPreparationWriter.PSObject.BaseObject, $compressionPreparation, $false)) | Out-Null
+    $compressionPreparationWire = [byte[]]$compressionPreparationStream.ToArray()
+}
+finally { $compressionPreparationWriter.Dispose() }
 $compressionDecode = @($compressionType.GetMethods($compressionFlags) | Where-Object {
     $_.Name -eq 'TryDecode' -and $_.GetParameters().Count -eq 4
 })[0]
@@ -39,29 +49,44 @@ function Test-CompressionPacket([byte[]]$Packet, [bool]$Expected, [string]$Name)
 function Set-CompressionInt32([byte[]]$Packet, [int]$Offset, [int]$Value) {
     [Buffer]::BlockCopy([BitConverter]::GetBytes($Value), 0, $Packet, $Offset, 4)
 }
-if ($compressionPacket[4] -ne 7) { throw 'Build the wire7 snapshot mod before running this smoke.' }
-$compressionStart = $compressionPacket.Length - $compressionWire.Length
+if ($compressionPacket[4] -ne 8) { throw 'Build the wire8 snapshot mod before running this smoke.' }
+$compressionStart = $compressionPacket.Length - $compressionWire.Length - $compressionPreparationWire.Length
 $compressionRawLength = [BitConverter]::ToInt32($compressionPacket, $compressionStart + 4)
 $compressionPackedLength = [BitConverter]::ToInt32($compressionPacket, $compressionStart + 8)
 if ($compressionRawLength -ne 2 -or $compressionPackedLength -ne $compressionWire.Length - 12 -or
     $compressionPacket[$compressionStart + 2] -ne 1) { throw 'Unexpected empty passive pool compression schema.' }
+function New-CompressionPacket([byte[]]$Packed) {
+    # Replace only the compressed data. Keep the complete original preparation
+    # suffix, so malformed streams cannot pass a rejection check just because
+    # the new snapshot section was accidentally omitted.
+    $rebuilt = New-Object byte[] ($compressionStart + 12 + $Packed.Length + $compressionPreparationWire.Length)
+    [Buffer]::BlockCopy($compressionPacket, 0, $rebuilt, 0, $compressionStart + 12)
+    if ($Packed.Length -gt 0) { [Buffer]::BlockCopy($Packed, 0, $rebuilt, $compressionStart + 12, $Packed.Length) }
+    [Buffer]::BlockCopy($compressionPacket, $compressionStart + $compressionWire.Length,
+        $rebuilt, $compressionStart + 12 + $Packed.Length, $compressionPreparationWire.Length)
+    Set-CompressionInt32 $rebuilt ($compressionStart + 8) $Packed.Length
+    return ,$rebuilt
+}
+$compressionPacked = New-Object byte[] $compressionPackedLength
+[Buffer]::BlockCopy($compressionPacket, $compressionStart + 12, $compressionPacked, 0, $compressionPackedLength)
 Test-CompressionPacket $compressionPacket $true 'Complete compressed passive pool decodes'
+Test-CompressionPacket (New-CompressionPacket $compressionPacked) $true 'Rebuilt normal pool with complete preparation suffix decodes'
 for ($length = 0; $length -lt $compressionPackedLength; $length++) {
     # Update the advertised compressed length too: only checking total packet
     # length would miss a silently accepted Deflate stream without its EOS.
-    $bad = New-Object byte[] ($compressionStart + 12 + $length)
-    [Buffer]::BlockCopy($compressionPacket, 0, $bad, 0, $bad.Length)
-    Set-CompressionInt32 $bad ($compressionStart + 8) $length
+    $packedPrefix = New-Object byte[] $length
+    if ($length -gt 0) { [Buffer]::BlockCopy($compressionPacked, 0, $packedPrefix, 0, $length) }
+    $bad = New-CompressionPacket $packedPrefix
     Test-CompressionPacket $bad $false "Deflate prefix/EOS truncation with updated packed length $length"
 }
-$bad = New-Object byte[] ($compressionPacket.Length + 1)
-[Buffer]::BlockCopy($compressionPacket, 0, $bad, 0, $compressionPacket.Length)
-Set-CompressionInt32 $bad ($compressionStart + 8) ($compressionPackedLength + 1)
+$packedTail = New-Object byte[] ($compressionPackedLength + 1)
+[Buffer]::BlockCopy($compressionPacked, 0, $packedTail, 0, $compressionPackedLength)
+$bad = New-CompressionPacket $packedTail
 Test-CompressionPacket $bad $false 'Compressed trailing byte is rejected'
-$bad = New-Object byte[] ($compressionPacket.Length + $compressionPackedLength)
-[Buffer]::BlockCopy($compressionPacket, 0, $bad, 0, $compressionPacket.Length)
-[Buffer]::BlockCopy($compressionPacket, $compressionStart + 12, $bad, $compressionPacket.Length, $compressionPackedLength)
-Set-CompressionInt32 $bad ($compressionStart + 8) ($compressionPackedLength * 2)
+$packedConcatenated = New-Object byte[] ($compressionPackedLength * 2)
+[Buffer]::BlockCopy($compressionPacked, 0, $packedConcatenated, 0, $compressionPackedLength)
+[Buffer]::BlockCopy($compressionPacked, 0, $packedConcatenated, $compressionPackedLength, $compressionPackedLength)
+$bad = New-CompressionPacket $packedConcatenated
 Test-CompressionPacket $bad $false 'Concatenated Deflate stream is rejected'
 foreach ($length in @(1, 3, 4194305)) {
     $bad = [byte[]]$compressionPacket.Clone()
@@ -79,7 +104,7 @@ $compressionReport = [pscustomobject]@{
     GameAssembly = $GuardSmokeGameAssembly.Location; ModAssembly = $GuardSmokeModAssembly.Location
     ModSha256 = (Get-FileHash -LiteralPath $GuardSmokeModAssembly.Location -Algorithm SHA256).Hash
     SnapshotWire = $compressionPacket[4]; PacketBytes = $compressionPacket.Length
-    RawBytes = $compressionRawLength; PackedBytes = $compressionPackedLength
+    RawBytes = $compressionRawLength; PackedBytes = $compressionPackedLength; PreparationBytes = $compressionPreparationWire.Length
     Checks = $compressionChecks.ToArray()
 }
 if ($compressionRequestedOutput) {

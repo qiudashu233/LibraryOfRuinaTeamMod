@@ -17,5 +17,8 @@
     <Compile Include="../../src/RuinaCoop/PassiveMirror.cs" Link="PassiveMirror.cs" />
     <Compile Include="../../src/RuinaCoop/EquipmentProtocol.cs" Link="EquipmentProtocol.cs" />
     <Compile Include="../../src/RuinaCoop/EquipmentAuthority.cs" Link="EquipmentAuthority.cs" />
-  </ItemGroup>
+      <Compile Include="../../src/RuinaCoop/PreparationState.cs" Link="PreparationState.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationMirror.cs" Link="PreparationMirror.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationProtocol.cs" Link="PreparationProtocol.cs" />
+</ItemGroup>
 </Project>

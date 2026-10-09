@@ -18,6 +18,7 @@ namespace RuinaCoop
                 request.UnitIndex >= snapshot.UnitDecks.Count) return PassiveResultCode.InvalidRequest;
             if (snapshot.ClaimOwners[request.UnitIndex] != sender) return PassiveResultCode.NotOwner;
             if (snapshot.DecksFrozen) return PassiveResultCode.Frozen;
+            if (!PreparationMirror.CanUseUnit(snapshot, request.UnitIndex)) return PassiveResultCode.NotReady;
             if (!snapshot.CoreBooksAvailable || snapshot.CoreBooksReason != CoreBooksReason.None ||
                 !snapshot.PassivesAvailable || snapshot.PassivesReason != PassivesReason.None)
                 return PassiveResultCode.UnsupportedInventory;

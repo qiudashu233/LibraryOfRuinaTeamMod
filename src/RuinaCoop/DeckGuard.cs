@@ -209,6 +209,7 @@ namespace RuinaCoop
             Patch(harmony, RequiredType(game, "PlatformCore_default"), "SavePlayData", new[] { typeof(int), typeof(GameSave.SaveData), typeof(Action<bool>) }, "SaveCorePrefix");
             Patch(harmony, typeof(GlobalGameManager), "LoadBattleScene", Type.EmptyTypes, "GuestBattlePrefix");
             Patch(harmony, RequiredType(game, "UI.UIBattleSettingPanel"), "OnClickBattleStart", Type.EmptyTypes, "GuestBattlePrefix");
+            Patch(harmony, RequiredType(game, "UI.UIController"), "OnClickGameStart", Type.EmptyTypes, "GuestBattlePrefix");
         }
 
         private static Type RequiredType(Assembly assembly, string name)
@@ -353,8 +354,8 @@ namespace RuinaCoop
 
         private static bool GuestBattlePrefix()
         {
-            if (Session == null || !Session.IsGuestSession) return true;
-            Debug.LogWarning("[RuinaCoop] Guest single-player reception is blocked while sharing host preparation.");
+            if (Session == null || !Session.IsActive) return true;
+            Debug.LogWarning("[RuinaCoop] 联机接待仍在准备阶段；战斗初始化与同步尚未实现，暂不能开始战斗。");
             return false;
         }
 

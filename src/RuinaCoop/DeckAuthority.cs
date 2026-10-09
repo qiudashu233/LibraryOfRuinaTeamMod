@@ -41,6 +41,7 @@ namespace RuinaCoop
             {
                 return DeckResultCode.Frozen;
             }
+            if (!PreparationMirror.CanUseUnit(snapshot, request.UnitIndex)) return DeckResultCode.NotReady;
 
             var deck = snapshot.UnitDecks[request.UnitIndex];
             if (deck == null)

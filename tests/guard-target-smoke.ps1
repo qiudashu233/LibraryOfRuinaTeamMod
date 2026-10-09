@@ -145,6 +145,7 @@ Add-GuardTarget 'PlatformManager' 'SavePlayData' @('System.Int32', 'GameSave.Sav
 Add-GuardTarget 'PlatformCore_default' 'SavePlayData' @('System.Int32', 'GameSave.SaveData', 'System.Action`1[System.Boolean]') 'SaveCorePrefix'
 Add-GuardTarget 'GlobalGameManager' 'LoadBattleScene' @() 'GuestBattlePrefix'
 Add-GuardTarget 'UI.UIBattleSettingPanel' 'OnClickBattleStart' @() 'GuestBattlePrefix'
+Add-GuardTarget 'UI.UIController' 'OnClickGameStart' @() 'GuestBattlePrefix'
 
 function Assert-GuardPrefix([Reflection.MethodInfo]$Original, [Reflection.MethodInfo]$Prefix) {
     if ($Prefix.ReturnType -ne [bool] -and $Prefix.ReturnType -ne [void]) {

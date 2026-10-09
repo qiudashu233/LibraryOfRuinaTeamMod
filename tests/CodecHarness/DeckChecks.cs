@@ -11,6 +11,7 @@ internal static class DeckChecks
         Protocol(roomId);
         Authority(ownerOne, ownerTwo);
         Snapshot(roomId, ownerOne, ownerTwo);
+        PreparationSnapshotIntegration(roomId, ownerOne);
         Capture(roomId, ownerOne);
     }
 
@@ -231,9 +232,11 @@ internal static class DeckChecks
         }
         Reject(packet.Concat(new byte[] { 0 }).ToArray(), roomId, "deck snapshot trailing data");
         var empty = new ProgressSnapshot().Encode(roomId);
-        Check(empty.Length == 58 && ProgressSnapshot.TryDecode(empty, roomId, out var emptyDecoded) &&
-            emptyDecoded.UnitDecks.Count == 0 && emptyDecoded.CardStock.Count == 0,
-            "minimum snapshot without a selected floor");
+        Check(empty.Length == 94 && ProgressSnapshot.TryDecode(empty, roomId, out var emptyDecoded) &&
+            emptyDecoded.UnitDecks.Count == 0 && emptyDecoded.CardStock.Count == 0 &&
+            !emptyDecoded.Preparation.Available && emptyDecoded.Preparation.Reason == PreparationReason.NotCaptured &&
+            emptyDecoded.Preparation.Phase == PreparationPhase.Selection && emptyDecoded.Preparation.ContextId == 0,
+            "minimum snapshot includes an explicit absent preparation section");
 
         var boundary = NewSnapshot(ownerOne, ownerTwo);
         boundary.UnitDecks[0].Fixed = true;
@@ -462,6 +465,45 @@ internal static class DeckChecks
         snapshot.CardStock.Add(new ProgressSnapshot.CardStockEntry { Id = 100, Count = 1 });
         snapshot.CardStock.Add(new ProgressSnapshot.CardStockEntry { Id = 101, Count = 2 });
         return snapshot;
+    }
+
+    private static void PreparationSnapshotIntegration(ulong roomId, ulong owner)
+    {
+        var snapshot = NewSnapshot(owner, 0);
+        snapshot.UnitDecks[0].UnitIdentity = 11;
+        snapshot.UnitDecks[1].UnitIdentity = 12;
+        var preparation = new PreparationSnapshot
+        {
+            Available = true, Reason = PreparationReason.None, Phase = PreparationPhase.Editing,
+            Revision = 1, ContextId = 9, StageId = snapshot.SelectedStageId, FloorId = snapshot.SelectedFloorId,
+            MaxUnits = 1, CurrentWaveIndex = 0, ClaimRevision = snapshot.ClaimRevision, DeckRevision = snapshot.DeckRevision
+        };
+        preparation.Floors.Add(new PreparationFloorEntry { FloorId = snapshot.SelectedFloorId, CanParticipate = true });
+        preparation.Participants.Add(new PreparationUnitEntry { UnitIndex = 0, UnitIdentity = 11, CanParticipate = true, Participating = true });
+        preparation.Participants.Add(new PreparationUnitEntry { UnitIndex = 1, UnitIdentity = 12, CanParticipate = true });
+        preparation.Controllers.Add(new PreparationControllerEntry { PlayerId = owner, Connected = true, Ready = true });
+        var wave = new PreparationWaveEntry { WaveIndex = 0 };
+        wave.Enemies.Add(new PreparationEnemyEntry { EnemyIdentity = 101, Unknown = true, Name = "???" });
+        preparation.Waves.Add(wave);
+        snapshot.Preparation = preparation;
+        Check(ProgressSnapshot.TryDecode(snapshot.Encode(roomId), roomId, out var parsed) &&
+            parsed.Preparation.ContextId == 9 && parsed.Preparation.Controllers[0].Ready &&
+            parsed.Preparation.Waves[0].Enemies[0].Unknown && PreparationMirror.CanUseUnit(parsed, 0) && !PreparationMirror.CanUseUnit(parsed, 1),
+            "full progress snapshot preserves preparation identity, ready, unknown enemies, and participation");
+        snapshot.ClaimOwners[1] = owner;
+        Reject(snapshot.Encode(roomId), roomId, "unselected librarian cannot retain a preparation claim");
+        snapshot.ClaimOwners[1] = 0;
+        preparation.DeckRevision++;
+        Reject(snapshot.Encode(roomId), roomId, "full snapshot rejects preparation equipment revision mismatch");
+        preparation.DeckRevision--;
+        preparation.Participants[0].UnitIdentity = 13;
+        Reject(snapshot.Encode(roomId), roomId, "full snapshot rejects preparation roster identity mismatch");
+        preparation.Participants[0].UnitIdentity = 11;
+        preparation.Revision = 0;
+        Reject(snapshot.Encode(roomId), roomId, "available published preparation needs a nonzero revision");
+        preparation.Revision = 1;
+        preparation.StageId++;
+        Reject(snapshot.Encode(roomId), roomId, "full snapshot rejects preparation stage mismatch");
     }
 
     private static DeckRequest NewRequest(ProgressSnapshot snapshot)

@@ -139,6 +139,7 @@ namespace UI
     {
         public static UIController Instance = new UIController();
         public UnitDataModel CurrentUnit;
+        public void OnClickGameStart() { }
     }
     public sealed class UIOriginCardSlot { }
     public sealed class UIInvenCardSlot { }
@@ -257,6 +258,7 @@ namespace RuinaCoop
     }
     internal sealed class RelaySession
     {
+        internal bool IsActive = true;
         internal bool IsGuestSession;
         internal bool PreparationFrozen;
         internal bool OwnerMayEdit;

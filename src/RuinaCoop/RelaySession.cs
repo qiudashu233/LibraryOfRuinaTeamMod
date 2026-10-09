@@ -18,6 +18,7 @@ namespace RuinaCoop
 
         private readonly Lobby _room;
         private readonly SteamId _hostId;
+        private readonly ulong _localPlayerId;
         private readonly bool _isHost;
         private readonly Action<Action> _onMainThread;
         private readonly Action<ProgressSnapshot> _onSnapshot;
@@ -37,6 +38,15 @@ namespace RuinaCoop
             internal PassiveReply Reply;
         }
         private readonly PrepClaims _claims = new PrepClaims();
+        private readonly PreparationState _preparation = new PreparationState();
+        private readonly Dictionary<ulong, PreparationReadyReply> _readyReceipts = new Dictionary<ulong, PreparationReadyReply>();
+        private uint _nextReadyRequest;
+        private uint _pendingReadyRequest;
+        private bool _pendingReadyValue;
+        private float _readyRequestDeadline;
+        private PreparationReadyReply? _deferredReadyReply;
+        internal string PreparationStatus { get; private set; } = "房主从原版邀请界面进入挑战准备。";
+        internal bool PreparationReadyPending { get { return _pendingReadyRequest != 0; } }
         private readonly Dictionary<uint, PendingGuest> _pendingGuests = new Dictionary<uint, PendingGuest>();
         private sealed class PendingGuest
         {
@@ -119,6 +129,8 @@ namespace RuinaCoop
         {
             get
             {
+                if (!_stopped && LatestSnapshot != null && LatestSnapshot.Preparation != null &&
+                    LatestSnapshot.Preparation.Phase >= PreparationPhase.StartPending) return true;
                 var scenes = GameSceneManager.Instance;
                 return !_stopped && scenes != null && scenes.battleScene != null &&
                     scenes.battleScene.gameObject.activeSelf;
@@ -130,6 +142,7 @@ namespace RuinaCoop
         {
             _room = room;
             _hostId = hostId;
+            _localPlayerId = SteamClient.SteamId.Value;
             _isHost = isHost;
             _onMainThread = onMainThread;
             _onSnapshot = onSnapshot;
@@ -195,6 +208,8 @@ namespace RuinaCoop
                 else
                 {
                     _guestConnection.Receive(32);
+                    if (PreparationReadyPending && Time.realtimeSinceStartup >= _readyRequestDeadline)
+                        PreparationStatus = "就绪确认超时；等待权威快照，持续未恢复时请离房重连。";
                     if (DeckRequestPending && Time.realtimeSinceStartup >= _deckRequestDeadline)
                     {
                         // Keep editing locked until a reply arrives or the guest rejoins:
@@ -217,6 +232,11 @@ namespace RuinaCoop
 
         internal bool SelectStage(int stageId)
         {
+            if (LatestSnapshot != null && LatestSnapshot.Preparation.Available)
+            {
+                PreparationStatus = "请在原版邀请界面切换接待。";
+                return false;
+            }
             if (!_isHost || PreparationFrozen || LatestSnapshot == null ||
                 !LatestSnapshot.Stages.Exists(stage => stage.Id == stageId))
             {
@@ -225,6 +245,74 @@ namespace RuinaCoop
             _selectedStageId = stageId;
             CaptureAndBroadcast();
             return true;
+        }
+
+        internal bool RefreshPreparation()
+        {
+            return !_stopped && _isHost && CaptureAndBroadcast();
+        }
+
+        internal bool RequestPreparationFloor(ProgressSnapshot expected, byte floorId)
+        {
+            if (!_isHost || _stopped || PreparationFrozen || DeckRequestPending ||
+                !ReferenceEquals(expected, LatestSnapshot) || expected == null || !expected.Preparation.Available ||
+                expected.Preparation.Phase != PreparationPhase.Editing ||
+                !expected.Preparation.Floors.Exists(row => row.FloorId == floorId && row.CanParticipate)) return false;
+            if (!NativePreparation.TrySelectNativeFloor(floorId)) return false;
+            return CaptureAndBroadcast();
+        }
+
+        internal bool RequestPreparationRoster(ProgressSnapshot expected, byte unitIndex, bool selected)
+        {
+            if (!_isHost || _stopped || PreparationFrozen || DeckRequestPending ||
+                !ReferenceEquals(expected, LatestSnapshot) || expected == null || !expected.Preparation.Available ||
+                expected.Preparation.Phase != PreparationPhase.Editing) return false;
+            var unit = expected.Preparation.Participants.Find(row => row.UnitIndex == unitIndex);
+            if (unit == null || !unit.CanParticipate || unit.Participating == selected ||
+                selected && expected.Preparation.MaxUnits != 1 &&
+                expected.Preparation.Participants.FindAll(row => row.Participating).Count >= expected.Preparation.MaxUnits) return false;
+            if (!NativePreparation.TrySetNativeParticipation(unitIndex, selected)) return false;
+            return CaptureAndBroadcast();
+        }
+
+        internal bool RequestPreparationReady(ProgressSnapshot expected, bool ready)
+        {
+            if (_stopped || !IsReadyForDeck || DeckRequestPending || PreparationReadyPending || NativeDeckEditor.Active ||
+                !ReferenceEquals(expected, LatestSnapshot) || expected == null || !expected.Preparation.Available || PreparationFrozen) return false;
+            var request = new PreparationReadyRequest { RequestId = ++_nextReadyRequest,
+                Revision = expected.Preparation.Revision, Ready = ready };
+            if (_isHost)
+            {
+                var result = ApplyPreparationReady(_hostId.Value, request);
+                PreparationStatus = ReadyResultText(result);
+                return result == PreparationReadyResultCode.Accepted;
+            }
+            var send = _guestConnection.Connection.SendMessage(PreparationProtocol.EncodeRequest(RoomId, request), SendType.Reliable);
+            if (send == Steamworks.Result.OK)
+            {
+                _pendingReadyRequest = request.RequestId;
+                _pendingReadyValue = ready;
+                _readyRequestDeadline = Time.realtimeSinceStartup + 10f;
+            }
+            PreparationStatus = send == Steamworks.Result.OK ? "等待房主确认就绪状态…" : "就绪请求发送失败：" + send;
+            return send == Steamworks.Result.OK;
+        }
+
+        private PreparationReadyResultCode ApplyPreparationReady(ulong sender, PreparationReadyRequest request)
+        {
+            if (PreparationFrozen) return PreparationReadyResultCode.Frozen;
+            if (!CaptureAndBroadcast()) return PreparationReadyResultCode.NotReady;
+            PreparationReadyResultCode result;
+            var candidate = _preparation.PreviewReady(sender, request.Revision, request.Ready,
+                sender == _hostId.Value || _guests.ContainsKey(sender), out result);
+            return candidate == null ? result : CaptureAndBroadcast(false, false, candidate)
+                ? PreparationReadyResultCode.Accepted : PreparationReadyResultCode.Failed;
+        }
+
+        private static string ReadyResultText(PreparationReadyResultCode result)
+        {
+            return result == PreparationReadyResultCode.Accepted ? "当前配置的就绪状态已确认。"
+                : "就绪未确认：" + result + "；请刷新准备配置。";
         }
 
         internal bool CanEditLocalUnit(UnitDataModel unit)
@@ -238,6 +326,7 @@ namespace RuinaCoop
                 // A guest's local save is never the authoritative deck source.
                 return false;
             }
+            if (PreparationFrozen) return false;
             var snapshot = LatestSnapshot;
             if (snapshot == null || snapshot.SelectedFloorId == PrepClaims.NoFloor)
             {
@@ -245,19 +334,17 @@ namespace RuinaCoop
             }
             foreach (var floor in snapshot.Floors)
             {
-                if ((byte)floor.Sephirah != snapshot.SelectedFloorId)
-                {
-                    continue;
-                }
                 for (var i = 0; i < floor.UnitReferences.Count; i++)
                 {
                     if (ReferenceEquals(floor.UnitReferences[i], unit))
                     {
+                        if ((byte)floor.Sephirah != snapshot.SelectedFloorId)
+                            return !snapshot.Preparation.Available || snapshot.Preparation.Phase != PreparationPhase.Editing;
                         var owner = _claims.OwnerAt((byte)i);
-                        return !PreparationFrozen && (owner == 0 || owner == _hostId.Value);
+                        return !PreparationFrozen && PreparationMirror.CanUseUnit(snapshot, i) &&
+                            (owner == 0 || owner == _hostId.Value);
                     }
                 }
-                break;
             }
             return true;
         }
@@ -272,6 +359,7 @@ namespace RuinaCoop
             {
                 return false;
             }
+            if (PreparationFrozen) return false;
             var snapshot = LatestSnapshot;
             if (snapshot == null || snapshot.SelectedFloorId == PrepClaims.NoFloor)
             {
@@ -279,10 +367,6 @@ namespace RuinaCoop
             }
             foreach (var floor in snapshot.Floors)
             {
-                if ((byte)floor.Sephirah != snapshot.SelectedFloorId)
-                {
-                    continue;
-                }
                 foreach (var reference in floor.UnitReferences)
                 {
                     var unit = reference as UnitDataModel;
@@ -291,7 +375,6 @@ namespace RuinaCoop
                         return CanEditLocalUnit(unit);
                     }
                 }
-                break;
             }
             return true;
         }
@@ -306,6 +389,7 @@ namespace RuinaCoop
             {
                 return false;
             }
+            if (PreparationFrozen) return false;
             var snapshot = LatestSnapshot;
             if (snapshot == null || snapshot.SelectedFloorId == PrepClaims.NoFloor)
             {
@@ -313,10 +397,6 @@ namespace RuinaCoop
             }
             foreach (var floor in snapshot.Floors)
             {
-                if ((byte)floor.Sephirah != snapshot.SelectedFloorId)
-                {
-                    continue;
-                }
                 foreach (var reference in floor.UnitReferences)
                 {
                     var unit = reference as UnitDataModel;
@@ -336,20 +416,16 @@ namespace RuinaCoop
                         return CanEditLocalUnit(unit);
                     }
                 }
-                break;
             }
             return true;
         }
 
         internal bool SelectFloor(byte floorId)
         {
-            if (!_isHost || PreparationFrozen || !_claims.SelectFloor(LatestSnapshot, floorId))
-            {
-                return false;
-            }
-            ClaimStatus = "Floor selected; players may claim librarians.";
-            CaptureAndBroadcast();
-            return true;
+            if (LatestSnapshot != null && LatestSnapshot.Preparation.Available)
+                return RequestPreparationFloor(LatestSnapshot, floorId);
+            ClaimStatus = "房主先从原版邀请界面进入挑战准备，再选择楼层。";
+            return false;
         }
 
         internal void RequestClaim(byte unitIndex, ClaimAction action)
@@ -363,6 +439,12 @@ namespace RuinaCoop
                 LatestSnapshot.SelectedFloorId == PrepClaims.NoFloor)
             {
                 ClaimStatus = "Select a stage and floor first.";
+                return false;
+            }
+            if (!LatestSnapshot.Preparation.Available || LatestSnapshot.Preparation.Phase != PreparationPhase.Editing ||
+                !PreparationMirror.CanUseUnit(LatestSnapshot, unitIndex))
+            {
+                ClaimStatus = "只能认领当前挑战楼层的出战馆员。";
                 return false;
             }
             if (!ReferenceEquals(expected, LatestSnapshot))
@@ -387,7 +469,7 @@ namespace RuinaCoop
                     ClaimStatus = "Claims are unavailable during reception or before progress is ready.";
                     return false;
                 }
-                var result = _claims.Apply(SteamClient.SteamId.Value, request.StageId,
+                var result = !PreparationMirror.CanUseUnit(LatestSnapshot, request.UnitIndex) ? ClaimResultCode.InvalidSlot : _claims.Apply(SteamClient.SteamId.Value, request.StageId,
                     request.FloorId, request.UnitIndex, request.ExpectedRevision, action);
                 ClaimStatus = "Claim " + action + ": " + result + ".";
                 if (result == ClaimResultCode.Accepted)
@@ -705,6 +787,9 @@ namespace RuinaCoop
             _deferredCorePageReply = null;
             _pendingPassiveRequest = 0;
             _deferredPassiveReply = null;
+            _pendingReadyRequest = 0;
+            _deferredReadyReply = null;
+            _preparation.Reset();
             DeckStatus = "Room session closed.";
             if (ReferenceEquals(DeckGuard.Session, this))
             {
@@ -766,13 +851,18 @@ namespace RuinaCoop
             return CaptureAndBroadcast(true, true);
         }
 
-        private bool CaptureAndBroadcast(bool requireCoreBooks, bool requirePassives = false)
+        private bool CaptureAndBroadcast(bool requireCoreBooks, bool requirePassives = false, PreparationSnapshot readyCandidate = null)
         {
             var published = false;
             try
             {
                 var snapshot = ProgressSnapshot.Capture(_selectedStageId);
+                NativePreparation.Capture(this, snapshot);
                 _selectedStageId = snapshot.SelectedStageId;
+                _claims.Reconcile(snapshot);
+                if (snapshot.Preparation.Available && snapshot.Preparation.Phase == PreparationPhase.Editing)
+                    _claims.SelectFloor(snapshot, snapshot.Preparation.FloorId);
+                _claims.ReconcilePreparation(snapshot.Preparation);
                 _claims.Reconcile(snapshot);
                 DeckMirror.Capture(snapshot);
                 EquipmentMirror.Capture(snapshot);
@@ -785,6 +875,15 @@ namespace RuinaCoop
                 // A failed encode/validation is still inside the equipment
                 // transaction. Advance the shared revision only on publication.
                 snapshot.DeckRevision = SameDeckData(snapshot, LatestSnapshot) ? _deckRevision : _deckRevision + 1;
+                snapshot.Preparation = _preparation.Preview(snapshot.Preparation, snapshot.ClaimRevision,
+                    snapshot.DeckRevision, _hostId.Value, _guests.Keys, snapshot.ClaimOwners);
+                if (readyCandidate != null)
+                {
+                    if (readyCandidate.Revision != snapshot.Preparation.Revision ||
+                        !SameBytes(PreparationMirror.EncodeContent(readyCandidate), PreparationMirror.EncodeContent(snapshot.Preparation)))
+                        return false;
+                    snapshot.Preparation = readyCandidate;
+                }
                 var content = snapshot.Encode(_room.Id.Value);
                 if (SameBytes(content, _latestContent))
                 {
@@ -806,6 +905,7 @@ namespace RuinaCoop
                 {
                     throw new InvalidOperationException("Host snapshot failed local validation: " + decodeReason);
                 }
+                if (!_preparation.Commit(snapshot.Preparation)) throw new InvalidOperationException("Preparation publication candidate expired.");
                 _latestContent = content;
                 _latestPacket = packet;
                 _deckRevision = snapshot.DeckRevision;
@@ -959,6 +1059,7 @@ namespace RuinaCoop
                 _lastDeckRequests.Remove(id);
                 _corePageReceipts.Remove(id);
                 _passiveReceipts.Remove(id);
+                _readyReceipts.Remove(id);
                 _nextDeckRequestTime.Remove(id);
                 Debug.Log("[RuinaCoop] Relay member left the room: " + id + ".");
             }
@@ -1022,6 +1123,7 @@ namespace RuinaCoop
                     _lastDeckRequests.Remove(guestId);
                     _corePageReceipts.Remove(guestId);
                     _passiveReceipts.Remove(guestId);
+                    _readyReceipts.Remove(guestId);
                     _nextDeckRequestTime.Remove(guestId);
                     ClaimStatus = "A member disconnected; their claims remain locked until the host releases them.";
                 }
@@ -1224,6 +1326,7 @@ namespace RuinaCoop
                 }
                 if (_deferredCorePageReply.HasValue) CompleteCorePageReply(_deferredCorePageReply.Value);
                 if (_deferredPassiveReply.HasValue) CompletePassiveReply(_deferredPassiveReply.Value);
+                if (_deferredReadyReply.HasValue) CompletePreparationReadyReply(_deferredReadyReply.Value);
                 Status = "Host progress received: " + snapshot.Stages.Count + " stages, " +
                     snapshot.Floors.Count + " floors.";
                 Debug.Log("[RuinaCoop] Received host progress snapshot " + snapshot.Sequence + ".");
@@ -1304,6 +1407,12 @@ namespace RuinaCoop
                     return;
                 }
                 CorePageRequest corePageRequest;
+                PreparationReadyRequest readyRequest;
+                if (PreparationProtocol.TryDecodeRequest(bytes, RoomId, out readyRequest))
+                {
+                    HandlePreparationReadyRequest(connection, sender, readyRequest);
+                    return;
+                }
                 if (EquipmentProtocol.TryDecodeRequest(bytes, _room.Id.Value, out corePageRequest))
                 {
                     HandleCorePageRequest(connection, sender, corePageRequest);
@@ -1339,7 +1448,8 @@ namespace RuinaCoop
                     _lastClaimRequests[sender] = request.RequestId;
                     result = PreparationFrozen || !CaptureAndBroadcast()
                         ? ClaimResultCode.NotReady
-                        : _claims.Apply(sender, request.StageId, request.FloorId,
+                        : !LatestSnapshot.Preparation.Available || LatestSnapshot.Preparation.Phase != PreparationPhase.Editing ||
+                            !PreparationMirror.CanUseUnit(LatestSnapshot, request.UnitIndex) ? ClaimResultCode.InvalidSlot : _claims.Apply(sender, request.StageId, request.FloorId,
                             request.UnitIndex, request.ExpectedRevision, request.Action);
                     if (result == ClaimResultCode.Accepted)
                     {
@@ -1359,6 +1469,51 @@ namespace RuinaCoop
                     Debug.LogWarning("[RuinaCoop] Claim reply send failed: " + send + ".");
                 }
             });
+        }
+
+        private void HandlePreparationReadyRequest(Connection connection, ulong sender, PreparationReadyRequest request)
+        {
+            PreparationReadyReply reply;
+            if (!_readyReceipts.TryGetValue(sender, out reply) || request.RequestId > reply.RequestId)
+            {
+                reply = new PreparationReadyReply { RequestId = request.RequestId,
+                    Result = ApplyPreparationReady(sender, request),
+                    Revision = LatestSnapshot == null ? 0 : LatestSnapshot.Preparation.Revision };
+                _readyReceipts[sender] = reply;
+            }
+            else if (request.RequestId != reply.RequestId)
+                reply = new PreparationReadyReply { RequestId = request.RequestId,
+                    Result = PreparationReadyResultCode.InvalidRequest,
+                    Revision = LatestSnapshot == null ? 0 : LatestSnapshot.Preparation.Revision };
+            SendSnapshot(connection);
+            connection.SendMessage(PreparationProtocol.EncodeReply(RoomId, reply), SendType.Reliable);
+        }
+
+        private void ReceivePreparationReadyReply(PreparationReadyReply reply)
+        {
+            _onMainThread(() => CompletePreparationReadyReply(reply));
+        }
+
+        private void CompletePreparationReadyReply(PreparationReadyReply reply)
+        {
+            if (_stopped || _isHost || !_guestAuthenticated || reply.RequestId != _pendingReadyRequest) return;
+            if (LatestSnapshot == null || LatestSnapshot.Preparation.Revision < reply.Revision)
+            {
+                _deferredReadyReply = reply;
+                return;
+            }
+            if (reply.Result == PreparationReadyResultCode.Accepted && LatestSnapshot.Preparation.Revision == reply.Revision)
+            {
+                var controller = LatestSnapshot.Preparation.Controllers.Find(row => row.PlayerId == _localPlayerId);
+                if (controller == null || controller.Ready != _pendingReadyValue)
+                {
+                    _deferredReadyReply = reply;
+                    return;
+                }
+            }
+            _deferredReadyReply = null;
+            _pendingReadyRequest = 0;
+            PreparationStatus = ReadyResultText(reply.Result);
         }
 
         private void HandleDeckRequest(Connection connection, ulong sender, DeckRequest request)
@@ -1683,6 +1838,11 @@ namespace RuinaCoop
                         out PassiveReply passiveReply))
                     {
                         Owner.ReceivePassiveReply(passiveReply);
+                    }
+                    else if (PreparationProtocol.TryDecodeReply(bytes, Owner._room.Id.Value,
+                        out PreparationReadyReply readyReply))
+                    {
+                        Owner.ReceivePreparationReadyReply(readyReply);
                     }
                     else
                     {

@@ -80,6 +80,7 @@ namespace RuinaCoop
                 _relay.Tick();
             }
             NativeDeckEditor.Tick(_relay);
+            NativePreparation.Tick(_relay);
             _localSelfTest.Tick();
         }
 
@@ -262,14 +263,14 @@ namespace RuinaCoop
             // Host actions can synchronously replace _progress. Keep roster and
             // owner indices from one snapshot for the whole IMGUI pass.
             var snapshot = _progress;
-            GUILayout.Label("Reception preparation (planning only)");
+            GUILayout.Label("Reception preparation (native invitation)");
             GUILayout.Label("Selected stage: " +
                 (snapshot.SelectedStageId == 0 ? "none" : snapshot.SelectedStageId.ToString()));
             GUILayout.Label("Claim revision: " + snapshot.ClaimRevision);
             GUILayout.Label(_relay == null ? "Relay unavailable." : _relay.ClaimStatus);
             if (snapshot.SelectedStageId == 0)
             {
-                GUILayout.Label("The host must choose a stage on the Host progress tab.");
+                GUILayout.Label("The host must send an invitation from the native game page.");
                 return;
             }
 
@@ -283,6 +284,8 @@ namespace RuinaCoop
                     {
                         continue;
                     }
+                    if (!snapshot.Preparation.Available || !snapshot.Preparation.Floors.Exists(row =>
+                        row.FloorId == (byte)floor.Sephirah && row.CanParticipate)) continue;
                     if (GUILayout.Button("Use " + floor.Sephirah + " (" + floor.Units.Count +
                         " librarians)"))
                     {
@@ -477,6 +480,7 @@ namespace RuinaCoop
         {
             _progress = snapshot;
             NativeDeckEditor.OnSnapshot(_relay, snapshot);
+            NativePreparation.OnSnapshot(_relay, snapshot);
         }
 
         private void CreateRoom(bool isPublic)
@@ -679,6 +683,7 @@ namespace RuinaCoop
             // Restore temporary UI bindings while the guest save guards still
             // apply. A room's late reply must never reopen an exited page.
             NativeDeckEditor.Close();
+            NativePreparation.Close();
             _localSelfTest.Stop();
             _localSelfTest = new LocalSelfTest();
             if (_relay != null)

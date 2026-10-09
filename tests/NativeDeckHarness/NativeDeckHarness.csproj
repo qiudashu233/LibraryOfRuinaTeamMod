@@ -15,5 +15,8 @@
     <Compile Include="../../src/RuinaCoop/DeckProtocol.cs" Link="DeckProtocol.cs" />
     <Compile Include="../../src/RuinaCoop/DeckAuthority.cs" Link="DeckAuthority.cs" />
     <Compile Include="../CodecHarness/GameStubs.cs" Link="GameStubs.cs" />
-  </ItemGroup>
+      <Compile Include="../../src/RuinaCoop/PreparationState.cs" Link="PreparationState.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationMirror.cs" Link="PreparationMirror.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationProtocol.cs" Link="PreparationProtocol.cs" />
+</ItemGroup>
 </Project>

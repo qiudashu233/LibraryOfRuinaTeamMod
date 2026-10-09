@@ -26,7 +26,7 @@ namespace RuinaCoop
     internal sealed class ProgressSnapshot
     {
         private const uint Magic = 0x52435053;
-        private const byte WireVersion = 7;
+        private const byte WireVersion = 8;
         private const int MaxPacketBytes = 65536;
         private const int MaxStages = 512;
         private const int MaxFloors = 12;
@@ -41,6 +41,7 @@ namespace RuinaCoop
         internal uint ClaimRevision;
         internal uint DeckRevision;
         internal bool DecksFrozen;
+        internal PreparationSnapshot Preparation = new PreparationSnapshot();
         internal bool CoreBooksAvailable;
         internal CoreBooksReason CoreBooksReason = RuinaCoop.CoreBooksReason.NotCaptured;
         internal readonly List<CoreBookEntry> CoreBooks = new List<CoreBookEntry>();
@@ -286,6 +287,7 @@ namespace RuinaCoop
                 DeckMirror.WriteData(writer, this, false);
                 EquipmentMirror.WriteData(writer, this, false);
                 PassiveMirror.WriteData(writer, this, false);
+                PreparationMirror.WriteData(writer, Preparation);
                 writer.Flush();
                 if (stream.Length > MaxPacketBytes)
                 {
@@ -416,6 +418,9 @@ namespace RuinaCoop
                     }
                     if (!EquipmentMirror.TryReadData(reader, result, out reason)) return false;
                     if (!PassiveMirror.TryReadData(reader, result, out reason)) return false;
+                    PreparationSnapshot preparation;
+                    if (!PreparationMirror.TryReadData(reader, out preparation, out reason)) return false;
+                    result.Preparation = preparation;
                     if (stream.Position != stream.Length)
                     {
                         return Reject(out reason, "Packet has trailing bytes.");
@@ -442,6 +447,7 @@ namespace RuinaCoop
                             return Reject(out reason, "Claims do not match the selected stage and floor.");
                         }
                     }
+                    if (!PreparationMirror.Validate(result, out reason)) return false;
                     snapshot = result;
                     return true;
                 }

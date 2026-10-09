@@ -106,6 +106,12 @@ internal static class Program
         Check(!(bool)Invoke("SaveCorePrefix", callback), "Guest concrete writer allowed.");
         Check(callbackCalled && !callbackResult, "Suppressed writer did not complete callback with false.");
         Check(!(bool)Invoke("GuestBattlePrefix"), "Guest single-player battle allowed.");
+        DeckGuard.Session.IsGuestSession = false;
+        Check(!(bool)Invoke("GuestBattlePrefix"), "Host entered unsynchronized battle before stage 4.");
+        DeckGuard.Session.IsActive = false;
+        Check((bool)Invoke("GuestBattlePrefix"), "Closed room blocked single-player battle.");
+        DeckGuard.Session.IsActive = true;
+        DeckGuard.Session.IsGuestSession = true;
         Check(!(bool)Invoke("UnitVoidPrefix", unit), "Guest changed local library.");
 
         DeckGuard.Session = null;

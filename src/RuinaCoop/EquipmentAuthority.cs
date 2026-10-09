@@ -20,6 +20,7 @@ namespace RuinaCoop
                 return CorePageResultCode.InvalidRequest;
             if (snapshot.ClaimOwners[request.UnitIndex] != sender) return CorePageResultCode.NotOwner;
             if (snapshot.DecksFrozen) return CorePageResultCode.Frozen;
+            if (!PreparationMirror.CanUseUnit(snapshot, request.UnitIndex)) return CorePageResultCode.NotReady;
             if (!snapshot.CoreBooksAvailable || snapshot.CoreBooksReason != CoreBooksReason.None)
                 return CorePageResultCode.UnsupportedInventory;
             var deck = snapshot.UnitDecks[request.UnitIndex];

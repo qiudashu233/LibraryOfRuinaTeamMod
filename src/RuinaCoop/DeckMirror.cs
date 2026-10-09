@@ -79,7 +79,7 @@ namespace RuinaCoop
                 }
                 if (unit != null)
                 {
-                    deck.UnitIdentity = UnitTokens.GetValue(unit, CreateUnitToken).Value;
+                    deck.UnitIdentity = GetUnitIdentity(unit);
                     CaptureDisplay(unit, book, deck);
                 }
                 snapshot.UnitDecks.Add(deck);
@@ -120,6 +120,11 @@ namespace RuinaCoop
             }
         }
 
+        internal static ulong GetUnitIdentity(UnitDataModel unit)
+        {
+            return unit == null ? 0 : UnitTokens.GetValue(unit, CreateUnitToken).Value;
+        }
+
         private static UnitToken CreateUnitToken(UnitDataModel unused)
         {
             var value = Interlocked.Increment(ref _nextUnitIdentity);
@@ -132,7 +137,7 @@ namespace RuinaCoop
             return !ReferenceEquals(id, null) && id.IsBasic() && id.id > 0 ? id.id : absent;
         }
 
-        private static void CaptureDisplay(UnitDataModel unit, BookModel book, ProgressSnapshot.UnitDeckEntry deck)
+        internal static void CaptureDisplay(UnitDataModel unit, BookModel book, ProgressSnapshot.UnitDeckEntry deck)
         {
             var display = deck.Display;
             if (book == null || deck.BookId <= 0) return;

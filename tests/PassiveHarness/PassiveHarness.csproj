@@ -11,5 +11,8 @@
     <Compile Include="../../src/RuinaCoop/DeckMirror.cs" Link="DeckMirror.cs" />
     <Compile Include="../../src/RuinaCoop/PrepClaims.cs" Link="PrepClaims.cs" />
     <Compile Include="../CodecHarness/GameStubs.cs" Link="GameStubs.cs" />
-  </ItemGroup>
+      <Compile Include="../../src/RuinaCoop/PreparationState.cs" Link="PreparationState.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationMirror.cs" Link="PreparationMirror.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationProtocol.cs" Link="PreparationProtocol.cs" />
+</ItemGroup>
 </Project>

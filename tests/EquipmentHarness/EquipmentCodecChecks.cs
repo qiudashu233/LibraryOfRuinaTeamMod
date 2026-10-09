@@ -69,7 +69,7 @@ internal static class EquipmentCodecChecks
         var original = Snapshot();
         original.CoreBooks[1].BookReference = new object();
         var packet = original.Encode(Room);
-        Check(packet[4] == 7, "snapshot wire version seven");
+        Check(packet[4] == 8, "snapshot wire version eight");
         var decoded = Decode(packet, "complete core inventory");
         Check(decoded.CoreBooksAvailable && decoded.CoreBooksReason == CoreBooksReason.None, "availability round trip");
         Check(decoded.UnitDecks[0].BookToken == 400 && decoded.CoreBooks.Count == 2, "current and inventory tokens round trip");
@@ -106,10 +106,15 @@ internal static class EquipmentCodecChecks
     private static Dictionary<string, int> Offsets(byte[] packet, ProgressSnapshot value)
     {
         var fields = new Dictionary<string, int>();
+        var passiveLength = PassiveMirror.EncodeWireData(value).Length;
+        int preparationLength;
+        using (var preparation = new MemoryStream())
+        using (var writer = new BinaryWriter(preparation))
+        { PreparationMirror.WriteData(writer, value.Preparation); preparationLength = (int)preparation.Length; }
         using (var stream = new MemoryStream(packet))
         using (var reader = new BinaryReader(stream))
         {
-            stream.Position = packet.Length - EquipmentMirror.EncodeContent(value).Length - PassiveMirror.EncodeContent(value).Length;
+            stream.Position = packet.Length - EquipmentMirror.EncodeContent(value).Length - passiveLength - preparationLength;
             fields["available"] = (int)stream.Position; reader.ReadByte();
             fields["reason"] = (int)stream.Position; reader.ReadByte();
             fields["currentCount"] = (int)stream.Position; var currentCount = reader.ReadByte();
@@ -139,7 +144,7 @@ internal static class EquipmentCodecChecks
                 for (var c = 0; c < cards; c++)
                 { fields[prefix + "card" + c] = (int)stream.Position; reader.ReadInt32(); }
             }
-            Check(stream.Position == packet.Length - PassiveMirror.EncodeContent(value).Length, "core extension offsets consume exact wire payload");
+            Check(stream.Position == packet.Length - passiveLength - preparationLength, "core offsets consume exact wire before passive and preparation sections");
         }
         return fields;
     }
