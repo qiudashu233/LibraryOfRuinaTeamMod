@@ -188,6 +188,7 @@ Check(!RelayAuth.TryReadChallenge(alteredChallenge, out _), "malformed challenge
 DeckChecks.Run(roomId, guestOne, guestTwo);
 DisplayChecks.Run(roomId);
 PreparationClaimChecks.Run();
+BattleFreezeChecks.Run();
 Console.WriteLine($"PASS: snapshot, claim/deck authority and protocols, and lobby-auth checks; snapshot {packet.Length} bytes.");
 if (args.Length == 1)
 {

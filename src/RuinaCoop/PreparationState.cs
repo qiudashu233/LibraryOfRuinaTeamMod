@@ -147,6 +147,12 @@ namespace RuinaCoop
             return true;
         }
         internal void Reset() { _current = null; _generation++; }
+        internal void ClearReadiness()
+        {
+            if (_current == null) return;
+            foreach (var controller in _current.Controllers) controller.Ready = false;
+            _generation++;
+        }
         internal bool AllControllersReady
         {
             get { return _current != null && _current.Available && _current.Phase == PreparationPhase.Editing &&

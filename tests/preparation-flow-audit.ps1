@@ -319,7 +319,37 @@ try {
     }
     $prefix = $guard.Methods | Where-Object Name -eq GuestBattlePrefix
     Assert-Flow ($prefix.ReturnType.FullName -eq 'System.Boolean' -and $prefix.Parameters.Count -eq 0) 'Compiled battle guard has a Boolean zero-argument Harmony shape'
-    Assert-Flow ((Flow-Calls $prefix 'get_IsActive').Count -eq 1) 'Compiled battle guard applies to every active room, including the host'
+    $startDelegation = Flow-Calls $prefix 'AllowNativeStart'
+    Assert-Flow ($startDelegation.Count -eq 1 -and $startDelegation[0].Operand.DeclaringType.FullName -eq 'RuinaCoop.NativeBattleBridge' -and
+        $startDelegation[0].Previous.OpCode.Name -eq 'ldnull') 'The shared guard delegates every native start to the independently latched 4A bridge'
+    Assert-Flow ((Flow-Calls $prefix 'get_IsActive').Count -eq 0) 'The shared guard has no room-only early return that could bypass retained native-scene protection'
+    $patchInstaller = $prepMod.MainModule.Types | Where-Object FullName -eq 'RuinaCoop.PatchInstaller'
+    Assert-Flow ($null -ne $patchInstaller) 'Compiled patch bootstrap exists'
+    $bootstrap = $patchInstaller.Methods | Where-Object Name -eq Install
+    $bridgeInstallation = @($bootstrap.Body.Instructions | Where-Object { $_.OpCode.Name -eq 'call' -and
+        $_.Operand.DeclaringType.FullName -eq 'RuinaCoop.NativeBattleBridge' -and $_.Operand.Name -eq 'Install' })
+    Assert-Flow ($bridgeInstallation.Count -eq 1) 'Bootstrap installs exactly one restricted native battle bridge'
+    Assert-Flow ((Flow-Calls $bootstrap 'UnpatchSelf').Count -eq 1) 'A missing required bridge target rolls back bootstrap patches'
+    $bridge = $prepMod.MainModule.Types | Where-Object FullName -eq 'RuinaCoop.NativeBattleBridge'
+    Assert-Flow ($null -ne $bridge) 'Compiled restricted native battle bridge exists'
+    $hostStart = $bridge.Methods | Where-Object Name -eq StartHost
+    Assert-Flow ((Flow-Calls $hostStart 'get_IsHost').Count -eq 1 -and (Flow-Calls $hostStart 'get_IsActive').Count -eq 1 -and
+        (Flow-Calls $hostStart 'get_BattleCommitted').Count -eq 1 -and (Flow-Calls $hostStart 'get_BattlePaused').Count -eq 1) 'Native loading requires the active committed unpaused host'
+    $initializing = $bridge.Methods | Where-Object Name -eq get_Initializing
+    Assert-Flow ((Flow-Calls $initializing 'get_IsHost').Count -eq 1 -and (Flow-Calls $initializing 'get_IsActive').Count -eq 1 -and
+        (Flow-Calls $initializing 'get_BattleCommitted').Count -eq 1 -and (Flow-Calls $initializing 'get_BattlePaused').Count -eq 1) 'Native phase progression independently rejects guest, stopped, uncommitted and failed sessions'
+    foreach ($name in @('SceneStartPrefix','StageStartPrefix')) {
+        $nativeStart = $bridge.Methods | Where-Object Name -eq $name
+        Assert-Flow ((Flow-Calls $nativeStart 'get_Initializing').Count -eq 1) "$name requires the restricted host initialization authority"
+        Assert-Flow ((Flow-Fields $nativeStart 'ldsfld' '_stageStartPermit').Count -eq 1) "$name requires the unique StageController start permit"
+    }
+    $allowStart = $bridge.Methods | Where-Object Name -eq AllowNativeStart
+    Assert-Flow ((Flow-Calls $allowStart 'RequestBattleStart').Count -eq 1 -and
+        (Flow-Calls $allowStart 'get_IsHost').Count -eq 1) 'A host native UI click requests the network barrier while guest clicks cannot request it'
+    Assert-Flow ((Flow-Fields $allowStart 'stsfld' '_loadPermit').Count -eq 2 -and
+        @((Flow-Fields $allowStart 'stsfld' '_loadPermit') | Where-Object { $_.Previous.OpCode.Name -eq 'ldc.i4.0' }).Count -eq 2) 'Both shared and identified native scene entries consume their one-use load permit'
+    $protectedBridge = $bridge.Methods | Where-Object Name -eq get_Protected
+    Assert-Flow ((Flow-Fields $protectedBridge 'ldsfld' '_ownedScene').Count -eq 1) 'Restricted bridge protection retains native ownership after room exit'
     $result = [ordered]@{Success=$true;CheckCount=$prepChecks.Count;MethodCount=$targets.Count;GameDllSha256=(Get-FileHash -LiteralPath $prepGamePath -Algorithm SHA256).Hash;Execution='Cecil metadata/IL only; no game models, singleton calls, saves or game process.';Checks=$prepChecks.ToArray()}
     if ($OutputPath) { $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $OutputPath -Encoding UTF8 }
     "PASS: $($prepChecks.Count) preparation flow/side-effect checks; $($targets.Count) actual method signatures."

@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace RuinaCoop
 {
-    internal sealed class RelaySession
+    internal sealed partial class RelaySession
     {
         private const int VirtualPort = 0;
         private const int MaxMessageBytes = 65536;
@@ -130,6 +130,7 @@ namespace RuinaCoop
         {
             get
             {
+                if (BattleActive) return true;
                 if (!_stopped && LatestSnapshot != null && LatestSnapshot.Preparation != null &&
                     LatestSnapshot.Preparation.Phase >= PreparationPhase.StartPending) return true;
                 var scenes = GameSceneManager.Instance;
@@ -248,6 +249,7 @@ namespace RuinaCoop
 
             try
             {
+                TickBattle();
                 if (_isHost)
                 {
                     _hostSocket.Receive(32);
@@ -846,6 +848,7 @@ namespace RuinaCoop
             {
                 return;
             }
+            StopBattle();
             _stopped = true;
             _guestRecovery.Stop();
             _pendingDeckRequest = 0;
@@ -920,6 +923,7 @@ namespace RuinaCoop
 
         private bool CaptureAndBroadcast(bool requireCoreBooks, bool requirePassives = false, PreparationSnapshot readyCandidate = null)
         {
+            if (BattleActive && !_validatingBattleConfiguration) return true;
             var published = false;
             try
             {
@@ -938,7 +942,12 @@ namespace RuinaCoop
                     throw new InvalidOperationException("Cannot publish the complete core page inventory: " + snapshot.CoreBooksReason);
                 if (requirePassives && !snapshot.PassivesAvailable)
                     throw new InvalidOperationException("Cannot publish the complete passive inventory: " + snapshot.PassivesReason);
-                snapshot.DecksFrozen = PreparationFrozen;
+                // The start barrier already freezes authority via BattleActive.
+                // Republishing that transient flag during final validation
+                // would itself advance deck/preparation versions and revoke
+                // the readiness that the offer is validating.
+                snapshot.DecksFrozen = _validatingBattleConfiguration && LatestSnapshot != null
+                    ? LatestSnapshot.DecksFrozen : PreparationFrozen;
                 // A failed encode/validation is still inside the equipment
                 // transaction. Advance the shared revision only on publication.
                 snapshot.DeckRevision = SameDeckData(snapshot, LatestSnapshot) ? _deckRevision : _deckRevision + 1;
@@ -1478,6 +1487,7 @@ namespace RuinaCoop
                     Debug.LogWarning("[RuinaCoop] Request from an unverified room member ignored.");
                     return;
                 }
+                if (HandleBattleGuestPacket(connection, sender, bytes)) return;
                 CorePageRequest corePageRequest;
                 PreparationReadyRequest readyRequest;
                 if (PreparationProtocol.TryDecodeRequest(bytes, RoomId, out readyRequest))
@@ -1884,7 +1894,11 @@ namespace RuinaCoop
                 if (bytes != null)
                 {
                     string challenge;
-                    if (RelayAuth.TryReadChallenge(bytes, out challenge))
+                    if (BattleProtocol.IsBattlePacket(bytes))
+                    {
+                        Owner.ReceiveBattleMessage(this, bytes);
+                    }
+                    else if (RelayAuth.TryReadChallenge(bytes, out challenge))
                     {
                         Owner.ReceiveChallenge(this, challenge);
                     }

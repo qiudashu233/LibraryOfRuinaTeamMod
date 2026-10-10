@@ -354,9 +354,9 @@ namespace RuinaCoop
 
         private static bool GuestBattlePrefix()
         {
-            if (Session == null || !Session.IsActive) return true;
-            Debug.LogWarning("[RuinaCoop] 联机接待仍在准备阶段；战斗初始化与同步尚未实现，暂不能开始战斗。");
-            return false;
+            // The bridge's independent scene latch also protects a paused
+            // verification scene after its network room has been closed.
+            return NativeBattleBridge.AllowNativeStart(null);
         }
 
         private static bool SaveCorePrefix(Action<bool> __2)

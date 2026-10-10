@@ -105,9 +105,12 @@ internal static class Program
         Action<bool> callback = result => { callbackCalled = true; callbackResult = result; };
         Check(!(bool)Invoke("SaveCorePrefix", callback), "Guest concrete writer allowed.");
         Check(callbackCalled && !callbackResult, "Suppressed writer did not complete callback with false.");
+        var battleDelegationCalls = NativeBattleBridge.DelegationCalls;
         Check(!(bool)Invoke("GuestBattlePrefix"), "Guest single-player battle allowed.");
+        Check(NativeBattleBridge.DelegationCalls == battleDelegationCalls + 1, "Guest start guard bypassed the native battle bridge.");
         DeckGuard.Session.IsGuestSession = false;
-        Check(!(bool)Invoke("GuestBattlePrefix"), "Host entered unsynchronized battle before stage 4.");
+        Check(!(bool)Invoke("GuestBattlePrefix"), "Host entered unsynchronized battle without bridge authorization.");
+        Check(NativeBattleBridge.DelegationCalls == battleDelegationCalls + 2, "Host start guard bypassed the network battle barrier.");
         DeckGuard.Session.IsActive = false;
         Check((bool)Invoke("GuestBattlePrefix"), "Closed room blocked single-player battle.");
         DeckGuard.Session.IsActive = true;

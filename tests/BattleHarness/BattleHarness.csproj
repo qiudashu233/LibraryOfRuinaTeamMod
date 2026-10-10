@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net7.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <NoWarn>$(NoWarn);CS0649</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/RuinaCoop/BattleProtocol.cs" Link="BattleProtocol.cs" />
+    <Compile Include="../../src/RuinaCoop/BattleStartCoordinator.cs" Link="BattleStartCoordinator.cs" />
+    <Compile Include="../../src/RuinaCoop/BattleManifest.cs" Link="BattleManifest.cs" />
+    <Compile Include="../../src/RuinaCoop/BattleInitialState.cs" Link="BattleInitialState.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationState.cs" Link="PreparationState.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationMirror.cs" Link="PreparationMirror.cs" />
+    <Compile Include="../../src/RuinaCoop/PreparationProtocol.cs" Link="PreparationProtocol.cs" />
+  </ItemGroup>
+</Project>

@@ -235,6 +235,18 @@ namespace HarmonyLib
 
 namespace RuinaCoop
 {
+    // Only verifies DeckGuard delegation. The real bridge's authorization and
+    // persistent-latch behavior run in the separate BattleBridgeHarness.
+    internal static class NativeBattleBridge
+    {
+        internal static int DelegationCalls;
+        internal static bool AllowNativeStart(MethodBase original)
+        {
+            DelegationCalls++;
+            if (original != null) throw new InvalidOperationException("Expected shared zero-argument start guard.");
+            return DeckGuard.Session == null || !DeckGuard.Session.IsActive;
+        }
+    }
     internal static class NativeDeckModels
     {
         internal static bool IsConstructingMirrors;

@@ -30,6 +30,9 @@ namespace RuinaCoop
                 NativeEquipmentEditor.Install(harmony);
                 NativePassiveEditor.Install(harmony);
                 NativePreparation.Install(harmony);
+                // Restricted first-round probe: verified one-use host load,
+                // persistent pause, and no native result or teardown path.
+                NativeBattleBridge.Install(harmony);
                 harmony.Patch(original, postfix: new HarmonyMethod(postfix));
             }
             catch

@@ -183,6 +183,8 @@ namespace RuinaCoop
         internal static void DrawSessionControls(RelaySession session)
         {
             if (session == null || !session.IsActive) return;
+            BattlePresentation.Draw(session);
+            if (session.BattleActive) return;
             var snapshot = Active ? _binding.Snapshot : session.LatestSnapshot;
             if (snapshot != null && snapshot.SelectedFloorId == PrepClaims.NoFloor && !string.IsNullOrEmpty(NativePreparation.Status))
                 GUI.Label(new Rect(Math.Max(0, Screen.width - 380), 15, 365, 65), NativePreparation.Status);
@@ -244,7 +246,14 @@ namespace RuinaCoop
                     GUI.enabled = true;
                     GUILayout.Label(session.PreparationStatus);
                     GUILayout.Label(NativePreparation.Status);
-                    GUILayout.Label("合作战斗将在后续阶段开放。");
+                    GUILayout.Label("4A验证：尹事务所、两位馆员、基础卡1至5、无被动。首幕暂停，验证结束需重启游戏。");
+                    if (session.IsHost)
+                    {
+                        GUI.enabled = !Active && !session.DeckRequestPending && !session.PreparationFrozen;
+                        if (GUILayout.Button("开始首幕初始化验证（结束需重启）")) session.RequestBattleStart();
+                        GUI.enabled = true;
+                    }
+                    GUILayout.Label(session.BattleStatus);
                 }
             }
             finally { GUI.enabled = previousEnabled; GUILayout.EndArea(); }

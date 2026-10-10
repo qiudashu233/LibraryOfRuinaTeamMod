@@ -218,7 +218,7 @@ namespace RuinaCoop
                 if (unit.IsAddedBattle) remaining--;
             }
         }
-        private static bool InvitationPrefix() { return !InRoom || DeckGuard.Session.IsHost; }
+        private static bool InvitationPrefix() { return !InRoom || DeckGuard.Session.IsHost && !DeckGuard.Session.PreparationFrozen; }
         private static bool PreparingPrefix()
         {
             if (!InvitationPrefix()) return false;
@@ -291,6 +291,7 @@ namespace RuinaCoop
         { if (_session != null && ReferenceEquals(session, _session) && !ReferenceEquals(snapshot, _displayed)) _dirty = true; }
         internal static void Tick(RelaySession session)
         {
+            if (session != null && session.BattleActive) { if (_session != null) Close(); return; }
             if (_session != null && (!ReferenceEquals(session, _session) || session == null || !session.IsActive || !session.IsReadyForDeck)) Close();
             if (session == null || !session.IsActive || !session.IsReadyForDeck || session.LatestSnapshot == null) return;
             var snapshot = session.LatestSnapshot; var prep = snapshot.Preparation;
@@ -702,8 +703,8 @@ namespace RuinaCoop
             if (index >= 0 && index < EnemyUnits.Count) RenderProfile(NativeUi.Get(FindPanel("UI.UIBattleSettingPanel"), "infoLeftPanel"), EnemyUnits[index], _displayed.Preparation.Waves[_wave].Enemies[index].Display, false);
             return false;
         }
-        private static bool BackPrefix() { if (!GuestView) return true; HideGuest(); return false; }
-        private static bool CancelPrefix() { if (!GuestView) return true; HideGuest(); return false; }
+        private static bool BackPrefix() { if (InRoom && DeckGuard.Session.BattleActive) return false; if (!GuestView) return true; HideGuest(); return false; }
+        private static bool CancelPrefix() { if (InRoom && DeckGuard.Session.BattleActive) return false; if (!GuestView) return true; HideGuest(); return false; }
         private static void HideGuest() { _hiddenContext = _displayed.Preparation.ContextId; _hiddenRoom = _session.RoomId; Close(); }
         internal static bool IsFailedContext(ulong room, ulong context)
         { return room != 0 && context != 0 && room == _failedRoom && context == _failedContext; }
