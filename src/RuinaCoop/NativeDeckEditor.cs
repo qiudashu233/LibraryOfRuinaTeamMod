@@ -246,7 +246,7 @@ namespace RuinaCoop
                     GUI.enabled = true;
                     GUILayout.Label(session.PreparationStatus);
                     GUILayout.Label(NativePreparation.Status);
-                    GUILayout.Label("4A验证：尹事务所、两位馆员、基础卡1至5、无被动。首幕暂停，验证结束需重启游戏。");
+                    GUILayout.Label("4A验证：潤事务所第1次接待、两位馆员、基础卡1至5、无被动。首幕暂停，验证结束需重启游戏。");
                     if (session.IsHost)
                     {
                         GUI.enabled = !Active && !session.DeckRequestPending && !session.PreparationFrozen;

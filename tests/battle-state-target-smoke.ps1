@@ -73,9 +73,34 @@ try {
     $wave=IL (Method 'StageModel' 'GetWave' 1)
     Assert-State ($wave-match'ldarg.1[\s\S]*ldc.i4.1[\s\S]*sub') 'Native GetWave subtracts one before reading the wave list'
 
+    # Preparation receives the game's display deck, not the XML insertion order.
+    # Prove the real call chain and comparator without initializing any models.
+    $previewDeck=IL (Method 'UnitDataModel' 'GetDeckCardModelAll' 0)
+    Assert-State ($previewDeck-match'call.*UnitDataModel::GetDeckAll\(\)'-and$previewDeck-match'DiceCardItemModel::.ctor\(LOR_DiceSystem.DiceCardXmlInfo\)') 'Native enemy preview preserves the GetDeckAll result order'
+    $unitDeck=IL (Method 'UnitDataModel' 'GetDeckAll' 0)
+    Assert-State ($unitDeck-match'BookModel::GetCardListFromCurrentDeck\(\)[\s\S]*SortUtil::CardInfoCompByCost[\s\S]*List`1<LOR_DiceSystem.DiceCardXmlInfo>::Sort') 'GetDeckAll sorts the current book deck with the real cost comparator'
+    $bookDeck=IL (Method 'BookModel' 'GetCardListFromCurrentDeck' 0)
+    Assert-State ($bookDeck-match'DeckModel::GetAllCardList\(\)[\s\S]*SortUtil::CardInfoCompByCost[\s\S]*List`1<LOR_DiceSystem.DiceCardXmlInfo>::Sort') 'BookModel also sorts its copied current deck before returning it'
+    $costComparator=IL (Method 'SortUtil' 'CardInfoCompByCost' 2)
+    Assert-State (([regex]::Matches($costComparator,'DiceCardSpec::Cost')).Count-eq2-and([regex]::Matches($costComparator,'LorId::id')).Count-eq2) 'Native card comparator reads both costs and both numeric IDs'
+    Assert-State ($costComparator-match'DiceCardSpec::Cost[\s\S]*DiceCardSpec::Cost[\s\S]*sub[\s\S]*stloc\.0[\s\S]*ldloc\.0[\s\S]*brfalse[^\n]*\n[^\n]*ldloc\.0\s*\n[^\n]*ret[\s\S]*DiceCardXmlInfo::get_id\(\)[\s\S]*LorId::id[\s\S]*DiceCardXmlInfo::get_id\(\)[\s\S]*LorId::id[\s\S]*sub\s*\n[^\n]*ret') 'Native card comparator orders cost first and uses ID only for equal costs'
+
     $adapter=ModType 'NativeBattleStateAdapter';$capture=$adapter.Methods|Where-Object Name -eq 'Capture';$captureIL=IL $capture
     Assert-State ($captureIL-match'get_IsHost') 'Native Capture explicitly requires host authority'
     Assert-State ($captureIL-match'get_CurrentWave\(\)[\s\S]*ldc.i4.1[\s\S]*sub.ovf') 'Adapter explicitly normalizes one-based native wave to zero-based wire index'
+    $manifestMethod=$adapter.Methods|Where-Object Name -eq 'ValidateManifest';$manifestIL=IL $manifestMethod
+    $enemyComparison=[regex]::Match($manifestIL,'(?s)ldfld System.Collections.Generic.List`1<System.Int32> RuinaCoop.BattleEnemyConfiguration::Cards(?<comparison>.*?)call System.Boolean System.Linq.Enumerable::SequenceEqual<System.Int32>\(')
+    Assert-State ($enemyComparison.Success-and$enemyComparison.Groups['comparison'].Value-match'Enumerable::OrderBy<System.Int32,System.Int32>') 'Compiled enemy whitelist compares an ordered copy rather than XML insertion order'
+    Assert-State ($enemyComparison.Groups['comparison'].Value-notmatch'Enumerable::Distinct|::ToHashSet') 'Enemy whitelist preserves the number of physical copies of each card'
+    Assert-State ($manifestIL-notmatch'List`1<[^>]+>::(Sort|Clear|Add|AddRange|Remove|RemoveAll|RemoveAt|Reverse|set_Item)\('-and$manifestIL-notmatch'stfld .*Battle(Enemy|Actor)Configuration::Cards') 'Manifest validation never sorts or changes the original card lists in place'
+    # The compiled initializer must contain the exact six-copy multiplicity.
+    # Keep each byte array intact rather than letting PowerShell enumerate bytes.
+    $whitelistArrays=@($manifestMethod.Body.Instructions|Where-Object {$_.OpCode.Code-eq[Mono.Cecil.Cil.Code]::Ldtoken-and$_.Operand-is[Mono.Cecil.FieldReference]})
+    Assert-State ($whitelistArrays.Count-eq1) 'Enemy whitelist has one explicit compiled expected-card initializer'
+    $whitelistBytes=$whitelistArrays[0].Operand.Resolve().InitialValue
+    Assert-State ($whitelistBytes.Length-eq24) 'Enemy whitelist expects exactly six 32-bit card IDs'
+    $whitelistIds=@(for($i=0;$i-lt6;$i++){[BitConverter]::ToInt32($whitelistBytes,$i*4)})
+    Assert-State (($whitelistIds-join',')-eq'1,1,2,2,3,3') 'Compiled whitelist keeps exactly two copies each of IDs 1,2,3'
     $adapterIL=($adapter.Methods|Where-Object HasBody|ForEach-Object {IL $_})-join"`n"
     foreach($method in @('GetActivatedBufList','GetReadyBufList','GetReadyReadyBufList','get_PassiveList','get_ReadyPassiveList')){Assert-State ($adapterIL-match[regex]::Escape($method)) "Adapter reads actual effect queue $method"}
     foreach($name in @('_cardInDeck','_cardInHand','_cardInUse','_cardInDiscarded','_cardInReserved','_stageDataStorage','_excludedIndies','_statBonus')){Assert-State ($adapterIL.Contains('"'+$name+'"')) "Compiled adapter retains explicit read $name"}
@@ -111,7 +136,17 @@ try {
     foreach($id in @(1003,1004)){$enemy=XmlEntry 'Enemy' 'ID' $id;Assert-State (!$enemy.Enemy.AiScript) "Enemy $id has no AI script";Assert-State ($enemy.Enemy.DeckId-eq'101003') "Enemy $id shares vanilla deck 101003"}
     $deck=XmlEntry 'Deck' 'ID' 101003
     Assert-State (($deck.Deck.Card-join',')-eq'1,2,3,1,2,3') 'Enemy deck is exactly six independent basic card copies'
-    foreach($id in 1..5){$card=XmlEntry 'Card' 'ID' $id;Assert-State ([string]::IsNullOrEmpty([string]$card.Card.Script)) "Basic card $id has no self script";foreach($die in $card.Card.BehaviourList.Behaviour){Assert-State ([string]::IsNullOrEmpty($die.Script)-and[string]::IsNullOrEmpty($die.ActionScript)) "Basic card $id die has no dice/action script"}}
+    $basicCosts=@{};$expectedCosts=@(0,1,1,2,3)
+    foreach($id in 1..5){
+        $card=XmlEntry 'Card' 'ID' $id
+        $basicCosts[$id]=[int]$card.Card.Spec.Cost
+        Assert-State ($basicCosts[$id]-eq$expectedCosts[$id-1]) "Basic card $id has native XML cost $($expectedCosts[$id-1])"
+        Assert-State ([string]::IsNullOrEmpty([string]$card.Card.Script)) "Basic card $id has no self script"
+        foreach($die in $card.Card.BehaviourList.Behaviour){Assert-State ([string]::IsNullOrEmpty($die.Script)-and[string]::IsNullOrEmpty($die.ActionScript)) "Basic card $id die has no dice/action script"}
+    }
+    $previewIds=@($deck.Deck.Card|ForEach-Object {[int]$_}|Sort-Object @{Expression={$basicCosts[$_]}},@{Expression={$_}})
+    Assert-State (($previewIds-join',')-eq'1,1,2,2,3,3') 'Real six-card enemy preview is cost/ID sorted 1,1,2,2,3,3'
+    Assert-State (($previewIds-join',')-ne($deck.Deck.Card-join',')) 'Enemy preparation order differs from its XML insertion order'
     $resource=$null
     $report=[ordered]@{status='passed';checks=$checks.Count;gameAssemblySha256=(Get-FileHash -LiteralPath (Join-Path $managed 'Assembly-CSharp.dll') -Algorithm SHA256).Hash;resourceAssetsSha256=(Get-FileHash -LiteralPath $resourcePath -Algorithm SHA256).Hash;modAssemblySha256=(Get-FileHash -LiteralPath $ModAssembly -Algorithm SHA256).Hash;supportedStage=3;supportedEnemies=@(1003,1004);supportedCards=@(1,2,3,4,5);notes='Read-only metadata/XML checks. Does not execute Unity or Steam; actual dual-end first-round validation remains required.';details=@($checks)}
     $json=$report|ConvertTo-Json -Depth 6

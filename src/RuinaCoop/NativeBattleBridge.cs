@@ -111,7 +111,7 @@ namespace RuinaCoop
             var stage = StageController.Instance.GetStageModel();
             if (stage == null || stage.ClassInfo == null || stage.ClassInfo.id == null ||
                 !stage.ClassInfo.id.IsBasic() || stage.ClassInfo.id.id != 3)
-                throw new InvalidOperationException("4A 首幕验证只适配原版尹之事务所接待。");
+                throw new InvalidOperationException("4A 首幕验证只适配原版潤事务所第1次接待（关卡3）。");
             if (stage.ClassInfo.GetPrevBattleStory() != null)
                 throw new InvalidOperationException("4A 直接加载路径尚未适配此前战剧情。");
             _owner = session; _ownedScene = true; _boundary = false; _loadPermit = 1; _stageStartPermit = 1;

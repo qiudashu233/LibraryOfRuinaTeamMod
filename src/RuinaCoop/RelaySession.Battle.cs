@@ -20,7 +20,7 @@ namespace RuinaCoop
         private BattleStartPhase _guestBattlePhase;
         private ulong _lastGuestBattleId;
         private float _guestBattleDeadline;
-        internal string BattleStatus { get; private set; } = "4A：尹事务所、两位馆员、基础书页、无被动。";
+        internal string BattleStatus { get; private set; } = "4A：潤事务所第1次接待、两位馆员、基础书页、无被动。";
         internal BattleManifest BattleConfiguration { get { return _battleManifest; } }
         internal BattleInitialState InitialBattleState { get { return _battleInitialState; } }
         internal bool BattleActive { get { return _isHost ? _battle.Phase != BattleStartPhase.Idle && _battle.Phase != BattleStartPhase.Cancelled :
@@ -38,6 +38,7 @@ namespace RuinaCoop
                     throw new InvalidOperationException("所有实际控制者必须确认当前配置就绪。");
                 var snapshot = LatestSnapshot;
                 var manifest = BattleManifestCodec.FromPreparation(snapshot, _hostId.Value, NativeBattleBridge.GetInvitationBooks());
+                LogBattlePreflight(manifest);
                 string reason;
                 if (!NativeBattleStateAdapter.ValidateManifest(manifest, out reason)) throw new InvalidOperationException(reason);
                 if (manifest.Librarians.Any(row => row.ControllerId != _hostId.Value && !_guests.ContainsKey(row.ControllerId)))
@@ -254,8 +255,9 @@ namespace RuinaCoop
             try
             {
                 BattleManifest manifest; string reason;
-                if (!BattleManifestCodec.TryDecode(offer.Payload, out manifest) || manifest.HostId != _hostId.Value || !NativeBattleStateAdapter.ValidateManifest(manifest, out reason))
-                    throw new InvalidOperationException("本次配置不在4A支持范围。");
+                if (!BattleManifestCodec.TryDecode(offer.Payload, out manifest) || manifest.HostId != _hostId.Value)
+                    throw new InvalidOperationException("房主出战清单无效。");
+                if (!NativeBattleStateAdapter.ValidateManifest(manifest, out reason)) throw new InvalidOperationException(reason);
                 if (LatestSnapshot == null || LatestSnapshot.Preparation.ContextId != offer.PreparationContext || LatestSnapshot.Preparation.Revision != offer.PreparationRevision ||
                     DeckRequestPending || PreparationReadyPending || NativeDeckEditor.Active)
                     throw new InvalidOperationException("准备配置已过期或配装尚未完成。");
@@ -307,5 +309,16 @@ namespace RuinaCoop
         }
         private void LogBattle(string detail)
         { Debug.Log("[RuinaCoop] Battle init " + (_battleOffer == null ? 0 : _battleOffer.BattleSessionId) + ": " + detail + "."); }
+        private void LogBattlePreflight(BattleManifest manifest)
+        {
+            var rows = manifest.Librarians.Select(actor => "roster=" + actor.RosterIndex + " controller=" +
+                (actor.ControllerId == manifest.HostId ? "host" : "guest") + " book=" + actor.BookId + " cards=[" +
+                string.Join(",", actor.Cards.Select(id => id.ToString()).ToArray()) + "] passives=[" +
+                string.Join(",", actor.Passives.Select(id => id.ToString()).ToArray()) + "]");
+            var enemies = manifest.Enemies.Select(enemy => "enemy=" + enemy.EnemyId + " book=" + enemy.BookId + " cards=[" +
+                string.Join(",", enemy.Cards.Select(id => id.ToString()).ToArray()) + "] passives=" + enemy.Passives.Count);
+            var detail = "stage=" + manifest.StageId + " floor=" + manifest.FloorId + " | " + string.Join(" | ", rows.Concat(enemies).ToArray());
+            Debug.Log("[RuinaCoop] Battle preflight: " + (detail.Length <= 1600 ? detail : detail.Substring(0, 1600)));
+        }
     }
 }

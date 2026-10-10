@@ -14,29 +14,54 @@ namespace RuinaCoop
         internal static bool ValidateManifest(BattleManifest manifest, out string reason)
         {
             if (!BattleManifestCodec.Validate(manifest, out reason)) return false;
-            reason = "4A仅支持尹事务所首次接待（关卡3）、两位馆员、基础战斗书页1至5和无被动基础/鼠核心书页。";
-            if (manifest.StageId != 3 || manifest.Enemies.Count != 2) return false;
+            if (manifest.StageId != 3)
+                return RejectManifest(out reason, "4A只支持潤事务所第1次接待（关卡3）；当前关卡=" + manifest.StageId + "。");
+            if (manifest.Enemies.Count != 2)
+                return RejectManifest(out reason, "关卡3应有两名敌人；当前敌人数=" + manifest.Enemies.Count + "。");
             for (var i = 0; i < 2; i++)
             {
                 var actor = manifest.Librarians[i];
-                if (!SupportedLibrarianBook(actor.BookId) || actor.Passives.Count != 0 || actor.Cards.Count != 9 || actor.Cards.Any(id => id < 1 || id > 5)) return false;
+                var label = "馆员“" + actor.Name + "”（名单第" + (actor.RosterIndex + 1) + "位）";
+                if (!SupportedLibrarianBook(actor.BookId))
+                    return RejectManifest(out reason, label + "核心书ID=" + actor.BookId + "不支持；请用莱尼、锤哥或皮特之页。");
+                if (actor.Passives.Count != 0)
+                    return RejectManifest(out reason, label + "仍有有效被动：" + string.Join(",", actor.Passives.Select(id => id.ToString()).ToArray()) + "；本次需移除继承并应用。");
+                if (actor.Cards.Count != 9)
+                    return RejectManifest(out reason, label + "卡组为" + actor.Cards.Count + "/9张；本次必须配满九张基础牌。");
+                var unsupportedCards = actor.Cards.Where(id => id < 1 || id > 5).Distinct().ToArray();
+                if (unsupportedCards.Length != 0)
+                    return RejectManifest(out reason, label + "含不支持的战斗书页ID：" + string.Join(",", unsupportedCards.Select(id => id.ToString()).ToArray()) + "；本次仅支持1至5。");
                 var book = BookXmlList.Instance.GetData(actor.BookId);
-                if (book == null || !book.id.IsBasic() || book.EquipEffect.PassiveList.Count != 0 || book.EquipEffect.OnlyCard.Count != 0 || book.EquipEffect.CardList.Count != 0) return false;
+                if (book == null || book.id != new LorId(actor.BookId))
+                    return RejectManifest(out reason, label + "核心书ID=" + actor.BookId + "的原版数据不可用。");
+                if (book.EquipEffect.PassiveList.Count != 0 || book.EquipEffect.OnlyCard.Count != 0 || book.EquipEffect.CardList.Count != 0)
+                    return RejectManifest(out reason, label + "核心书ID=" + actor.BookId + "包含未适配的原生被动或专用牌机制。");
                 var enemy = manifest.Enemies[i];
-                if (enemy.EnemyId != 1003 + i || enemy.BookId != 101003 + i || enemy.Passives.Count != 0 ||
-                    !enemy.Cards.SequenceEqual(new[] { 1, 2, 3, 1, 2, 3 })) return false;
+                var enemyLabel = "敌方第" + (i + 1) + "位";
+                if (enemy.EnemyId != 1003 + i || enemy.BookId != 101003 + i)
+                    return RejectManifest(out reason, enemyLabel + "身份不符：敌人ID=" + enemy.EnemyId + "，核心书ID=" + enemy.BookId + "。");
+                if (enemy.Passives.Count != 0)
+                    return RejectManifest(out reason, enemyLabel + "含未适配的有效被动。");
+                // Preparation getters sort by cost and then XML ID. Validate
+                // the six physical copies, not their XML insertion order.
+                // OrderBy creates a copy; manifest and runtime zone order stay intact.
+                if (!enemy.Cards.OrderBy(id => id).SequenceEqual(new[] { 1, 1, 2, 2, 3, 3 }))
+                    return RejectManifest(out reason, enemyLabel + "卡组不符：实际[" + string.Join(",", enemy.Cards.Select(id => id.ToString()).ToArray()) + "]；应为1、2、3号牌各两张。");
             }
             var stage = StageClassInfoList.Instance.GetData(3);
-            if (stage == null || !stage.id.IsBasic() || stage.waveList.Count != 1 || stage.waveList[0].enemyUnitIdList.Count != 2 ||
+            if (stage == null || stage.id != new LorId(3) || stage.waveList.Count != 1 || stage.waveList[0].enemyUnitIdList.Count != 2 ||
                 stage.waveList[0].enemyUnitIdList[0] != new LorId(1003) || stage.waveList[0].enemyUnitIdList[1] != new LorId(1004) ||
-                !string.IsNullOrEmpty(stage.waveList[0].aggroScript) || !string.IsNullOrEmpty(stage.waveList[0].managerScript)) return false;
+                !string.IsNullOrEmpty(stage.waveList[0].aggroScript) || !string.IsNullOrEmpty(stage.waveList[0].managerScript))
+                return RejectManifest(out reason, "本机关卡3的原版敌方名单、波次或脚本与已核验范围不一致。");
             for (var id = 1; id <= 5; id++)
             {
                 var card = ItemXmlDataList.instance.GetCardItem(new LorId(id), false);
-                if (!SupportedCard(card)) return false;
+                if (!SupportedCard(card) || card.id != new LorId(id)) return RejectManifest(out reason, "本机基础战斗书页ID=" + id + "的数据或脚本不在已核验范围。");
             }
             reason = null; return true;
         }
+
+        private static bool RejectManifest(out string reason, string detail) { reason = detail; return false; }
 
         internal static BattleInitialState Capture(BattleManifest manifest)
         {
